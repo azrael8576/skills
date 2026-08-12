@@ -1,0 +1,27 @@
+{
+  "skill": "github-code-review-with-codegraph",
+  "version": "1.0.0",
+  "evals": [
+    {
+      "id": "happy-path-codegraph",
+      "description": "Single valid GitHub PR URL, workspace matches, codegraph init succeeds.",
+      "input": "/github-code-review-with-codegraph https://github.com/octocat/hello-world/pull/42",
+      "expected_behavior": "Full pipeline with codegraph init, review contains 'used CodeGraph !' footer.",
+      "success_criteria": ["Posted review contains header `### 🤖 AI Code Review — #42`", "Codegraph footer 'used CodeGraph !' present after signature", "Branch info and verdict present"]
+    },
+    {
+      "id": "codegraph-init-failed",
+      "description": "npx codegraph init fails in worktree.",
+      "input": "/github-code-review-with-codegraph https://github.com/octocat/hello-world/pull/42",
+      "expected_behavior": "Hard stop at Stage 2 with codegraph-init-failed.",
+      "success_criteria": ["error_type: codegraph-init-failed", "SubAgent never dispatched"]
+    },
+    {
+      "id": "codegraph-footer-missing",
+      "description": "SubAgent returns review without codegraph footer.",
+      "input": "/github-code-review-with-codegraph https://github.com/octocat/hello-world/pull/42",
+      "expected_behavior": "Stage 4.5 validation fails with codegraph_footer_missing.",
+      "success_criteria": ["error_type: review-validation-failed", "Failure message mentions codegraph footer", "Review NOT posted"]
+    }
+  ]
+}
