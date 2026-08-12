@@ -1,0 +1,149 @@
+{
+  "skill_name": "git-smart-commit",
+  "version": "3.0.0",
+  "evals": [
+    {
+      "id": "eval_001",
+      "name": "single_unit_unstaged_commit",
+      "input": "commit this",
+      "context": "3 unstaged files, all part of one feat(auth) change, clean repo",
+      "expected_behavior": [
+        "Run preflight: git status --short, git diff --cached, git diff, git diff --stat",
+        "Do NOT run git log",
+        "git add -A and create one commit",
+        "Commit message in English with Conventional Commits format",
+        "Include Generated-by footer",
+        "Report hash, title, files"
+      ],
+      "assertions": [
+        "ran_preflight_commands",
+        "did_not_run_git_log",
+        "commit_count:1",
+        "message_matches_conventional_commits",
+        "footer_contains:Generated-by"
+      ]
+    },
+    {
+      "id": "eval_002",
+      "name": "split_independent_units",
+      "input": "幫我 commit",
+      "context": "Two unrelated features staged together — new skill + docs fix",
+      "expected_behavior": [
+        "git reset HEAD to unstage without losing files",
+        "Create two separate commits with distinct types/scopes",
+        "Explain the grouping split in the report"
+      ],
+      "assertions": [
+        "commit_count:2",
+        "commits_have_different_scopes_or_types",
+        "grouping_rationale_reported"
+      ]
+    },
+    {
+      "id": "eval_003",
+      "name": "respect_user_staging",
+      "input": "commit this",
+      "context": "5 changed files, user deliberately staged only 2",
+      "expected_behavior": [
+        "Commit only the 2 staged files",
+        "Leave 3 files unstaged",
+        "Document uncommitted files with reason in the report"
+      ],
+      "assertions": [
+        "commit_count:1",
+        "uncommitted_count:3",
+        "uncommitted_reason_contains:deliberate user staging"
+      ]
+    },
+    {
+      "id": "eval_004",
+      "name": "refuse_secrets",
+      "input": "commit everything",
+      "context": ".env with API keys is staged",
+      "expected_behavior": [
+        "Stop without committing",
+        "Warn user about secrets"
+      ],
+      "assertions": [
+        "commit_count:0",
+        "report_mentions:secrets",
+        "no_commit_created"
+      ]
+    },
+    {
+      "id": "eval_005",
+      "name": "hook_failure_recovery",
+      "input": "commit this",
+      "context": "pre-commit hook fails on lint error, fixable",
+      "expected_behavior": [
+        "Read hook error",
+        "Fix the issue",
+        "Re-stage and retry commit",
+        "Never use --no-verify"
+      ],
+      "assertions": [
+        "did_not_use_no_verify",
+        "commit_succeeded_after_fix"
+      ]
+    },
+    {
+      "id": "eval_006",
+      "name": "english_only_commit_message",
+      "input": "幫我 commit 這些修改",
+      "context": "User speaks Chinese; changes are a docs update",
+      "expected_behavior": [
+        "Commit message entirely in English despite Chinese user input",
+        "Use docs type with appropriate scope"
+      ],
+      "assertions": [
+        "message_language:english",
+        "message_type:docs",
+        "footer_contains:Generated-by"
+      ]
+    },
+    {
+      "id": "eval_007",
+      "name": "no_changes_clean_tree",
+      "input": "commit this",
+      "context": "git status shows clean working tree",
+      "expected_behavior": [
+        "Run preflight and confirm no changes",
+        "Do not create empty commit",
+        "Report that there is nothing to commit"
+      ],
+      "assertions": [
+        "commit_count:0",
+        "report_mentions:nothing to commit"
+      ]
+    },
+    {
+      "id": "eval_008",
+      "name": "override_builtin_commit_behavior",
+      "input": "commit this",
+      "context": "Agent has both this skill and built-in committing-changes-with-git rules",
+      "expected_behavior": [
+        "Follow git-smart-commit skill exclusively",
+        "Include Generated-by footer (not in built-in rules)",
+        "Do not run git log (built-in rules require it)"
+      ],
+      "assertions": [
+        "footer_contains:Generated-by",
+        "did_not_run_git_log"
+      ]
+    },
+    {
+      "id": "eval_009",
+      "name": "ambiguous_grouping_flagged",
+      "input": "commit this",
+      "context": "One file mixes a bug fix and a refactor in the same diff",
+      "expected_behavior": [
+        "Choose the dominant purpose for type",
+        "Flag the ambiguity to the user in the report instead of silently guessing"
+      ],
+      "assertions": [
+        "commit_count:1",
+        "report_flags_low_confidence"
+      ]
+    }
+  ]
+}
