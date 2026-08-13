@@ -81,13 +81,13 @@ deletions, and context lines.
 
 ### 3.5 Read related files (imports & dependencies)
 
-Look at import statements in the changed files. Read direct dependencies:
-parent classes, interfaces, shared utilities, type definitions. This lets
-you catch issues like broken contracts, missing null checks on upstream
-data, or incompatible API changes.
+Trace affected consumers and execution contexts.
+For each changed artifact, identify what reads, invokes, validates, loads, installs, or executes it.
 
-Use judgment — read enough to understand how changes fit into the system,
-but don't read the entire codebase.
+Follow code dependencies where relevant, but also inspect scripts, schemas, configuration loaders, CI/build tooling, package/install paths, protocols, and runtime environments.
+
+For each candidate issue,identify the concrete affected consumer or execution scenario; do not stop at speculative impact. 
+Continue until all actionable findings have been considered.
 
 ---
 
