@@ -71,16 +71,15 @@ matching local project then retry.
 
 ## Step 2 - Initialize Paths
 
-Use absolute paths. Create only the temp directory here; artifacts are written
-in Stage 2.
+Use absolute paths. Create a run-specific temp directory here; artifacts are
+written in Stage 2.
 
 ```bash
 WORKSPACE_PATH="<cwd absolute path>"
 SKILL_PATH="<absolute path to this skill directory>"
 USER_LANG="<language the user used>"
 MODEL_ID="<exact model identifier>"
-REVIEW_TMP_DIR="${WORKSPACE_PATH}/.pr-review-tmp"
-mkdir -p "${REVIEW_TMP_DIR}"
+REVIEW_TMP_DIR=$(mktemp -d "${WORKSPACE_PATH}/.pr-review-tmp.XXXXXX")
 ```
 
 **Done when:** `REVIEW_TMP_DIR` exists.
@@ -117,45 +116,62 @@ redirect-created empty file as a successful artifact. Use
 ```bash
 # Metadata
 gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" \
-  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-metadata.json"
+  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-metadata.json" \
+  || { echo "error_type: artifact-write-failed" >&2; exit 1; }
 
 # Description (body)
 gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" --jq '.body // ""' \
-  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-description.md"
+  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-description.md" \
+  || { echo "error_type: artifact-write-failed" >&2; exit 1; }
 
 # Labels
 gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" --jq '[.labels[].name] | join("\n")' \
-  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-labels.txt"
+  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-labels.txt" \
+  || { echo "error_type: artifact-write-failed" >&2; exit 1; }
 
 # Discussions (human review comments, excluding bot/AI reviews)
 gh api --paginate --slurp "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" \
   --jq '[.[][] | select(.user.type != "Bot") | select((.body // "") | test("^### 🤖 AI Code Review") | not) | {author: .user.login, body: .body, path: .path, line: .line, created_at: .created_at}]' \
-  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-discussions.json"
+  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-discussions.json" \
+  || { echo "error_type: discussions-fetch-failed" >&2; exit 1; }
+
+# Human review submissions (approve/comment/request changes)
+gh api --paginate --slurp "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/reviews" \
+  --jq '[.[][] | select(.user.type != "Bot") | select((.body // "") | test("^### 🤖 AI Code Review") | not) | {author: .user.login, state: .state, body: .body, submitted_at: .submitted_at}]' \
+  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-reviews.json" \
+  || { echo "error_type: discussions-fetch-failed" >&2; exit 1; }
 
 # Also get issue comments (general PR comments)
 gh api --paginate --slurp "repos/${OWNER}/${REPO}/issues/${PR_NUMBER}/comments" \
   --jq '[.[][] | select(.user.type != "Bot") | select((.body // "") | test("^### 🤖 AI Code Review") | not) | {author: .user.login, body: .body, created_at: .created_at}]' \
-  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-issue-comments.json"
+  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-issue-comments.json" \
+  || { echo "error_type: discussions-fetch-failed" >&2; exit 1; }
 
 # Changed files
 gh api --paginate --slurp "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/files" \
   --jq '[.[][] | {filename: .filename, status: .status, additions: .additions, deletions: .deletions}]' \
-  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-changed-files.json"
+  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-changed-files.json" \
+  || { echo "error_type: artifact-write-failed" >&2; exit 1; }
 
 # Diff
 gh pr diff "${PR_NUMBER}" --repo "${OWNER}/${REPO}" \
-  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-diff.patch"
+  > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-diff.patch" \
+  || { echo "error_type: diff-fetch-failed" >&2; exit 1; }
 
 # Target review rule (from target branch)
 TARGET_BRANCH=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" --jq '.base.ref')
+decode_base64() { base64 --decode 2>/dev/null || base64 -D; }
 gh api "repos/${OWNER}/${REPO}/contents/review-rule.md?ref=${TARGET_BRANCH}" \
-  --jq '.content' | base64 -d \
+  --jq '.content' | decode_base64 \
   > "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-target-review-rule.md" 2>/dev/null || true
 ```
 
-Require a non-empty diff before continuing:
+Require non-empty required artifacts before continuing:
 
 ```bash
+test -s "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-metadata.json" \
+  && test -s "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-changed-files.json" \
+  || { echo "error_type: artifact-write-failed" >&2; exit 1; }
 test -s "${REVIEW_TMP_DIR}/pr-${PR_NUMBER}-diff.patch" \
   || { echo "error_type: diff-fetch-failed" >&2; exit 1; }
 ```
@@ -184,13 +200,14 @@ Create worktree:
 
 ```bash
 cd "${WORKSPACE_PATH}" && git fetch origin \
-  "refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}-head"
+  "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}-head"
 cd "${WORKSPACE_PATH}" && git worktree add "${WORKTREE_PATH}" \
   "origin/pr-${PR_NUMBER}-head" --detach
 ```
 
 This pull ref resolves to the exact PR head, including fork PRs; never fetch
-the unqualified source-branch name. Retry the same fetch once on transient
+the unqualified source-branch name. The leading `+` force-updates the cached
+ref after a rebase or force-push. Retry the same fetch once on transient
 failure. Filesystem denial → **hard stop** `worktree-permission-denied`; else
 `worktree-failed`.
 

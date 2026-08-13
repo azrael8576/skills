@@ -63,6 +63,7 @@ for (const skillDir of skillDirs) {
 
   if (evalData.skill_name !== skillName) {
     fail(`${skillName}: evals.json skill_name is '${evalData.skill_name ?? "missing"}'`);
+    continue;
   }
 
   if (evalData.version !== skillVersion) {
