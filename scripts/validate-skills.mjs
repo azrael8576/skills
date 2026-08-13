@@ -19,26 +19,37 @@ function readSkillVersion(skillFile) {
   return version?.[1] ?? null;
 }
 
-const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+function skillDirectories(root) {
+  const directories = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+
+    const directory = path.join(root, entry.name);
+    if (fs.existsSync(path.join(directory, "SKILL.md"))) {
+      directories.push(directory);
+    }
+    directories.push(...skillDirectories(directory));
+  }
+  return directories;
+}
+
+const skillDirs = skillDirectories(skillsDir);
 let checked = 0;
 
-for (const entry of entries) {
-  if (!entry.isDirectory()) continue;
-
-  const skillDir = path.join(skillsDir, entry.name);
+for (const skillDir of skillDirs) {
+  const skillName = path.basename(skillDir);
   const skillFile = path.join(skillDir, "SKILL.md");
-  if (!fs.existsSync(skillFile)) continue;
 
   checked += 1;
   const skillVersion = readSkillVersion(skillFile);
   if (!skillVersion) {
-    fail(`${entry.name}: SKILL.md has no frontmatter version`);
+    fail(`${skillName}: SKILL.md has no frontmatter version`);
     continue;
   }
 
   const evalFile = path.join(skillDir, "evals", "evals.json");
   if (!fs.existsSync(evalFile)) {
-    console.log(`OK   ${entry.name}@${skillVersion} (no evals.json)`);
+    console.log(`OK   ${skillName}@${skillVersion} (no evals.json)`);
     continue;
   }
 
@@ -46,24 +57,24 @@ for (const entry of entries) {
   try {
     evalData = JSON.parse(fs.readFileSync(evalFile, "utf8"));
   } catch (error) {
-    fail(`${entry.name}: invalid evals/evals.json (${error.message})`);
+    fail(`${skillName}: invalid evals/evals.json (${error.message})`);
     continue;
   }
 
-  if (evalData.skill_name !== entry.name) {
-    fail(`${entry.name}: evals.json skill_name is '${evalData.skill_name ?? "missing"}'`);
+  if (evalData.skill_name !== skillName) {
+    fail(`${skillName}: evals.json skill_name is '${evalData.skill_name ?? "missing"}'`);
   }
 
   if (evalData.version !== skillVersion) {
-    fail(`${entry.name}: SKILL.md=${skillVersion}, evals.json=${evalData.version ?? "missing"}`);
+    fail(`${skillName}: SKILL.md=${skillVersion}, evals.json=${evalData.version ?? "missing"}`);
     continue;
   }
 
-  console.log(`OK   ${entry.name}@${skillVersion}`);
+  console.log(`OK   ${skillName}@${skillVersion}`);
 }
 
 if (checked === 0) {
-  fail("no skills/*/SKILL.md found");
+  fail("no SKILL.md found under skills/");
 }
 
 if (!process.exitCode) {
