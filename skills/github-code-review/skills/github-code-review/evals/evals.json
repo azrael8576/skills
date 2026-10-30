@@ -1,62 +1,252 @@
 {
   "skill_name": "github-code-review",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "evals": [
     {
-      "id": "happy-path-single-pr",
-      "description": "Single valid GitHub PR URL, workspace matches, review-rule exists on target branch.",
-      "input": "/github-code-review https://github.com/octocat/hello-world/pull/42",
-      "expected_behavior": "Full pipeline completes: parse URL, access check, materialize, gate, subagent, validate, post.",
-      "success_criteria": ["Posted review contains header `### 🤖 AI Code Review — #42`", "Branch info line present", "Verdict line present", "Signature with model and timestamp"]
+      "id": 1,
+      "prompt": "/github-code-review https://github.com/team/mobile-app/pull/123，請照 target branch 的 review-rule.md 審查並張貼回 PR。",
+      "expected_output": "The agent calls only the review_run.py scripts for GitHub I/O, fetches the PR into artifact files, keeps PR content in artifact files for the review phase, validates output, then posts through review_run.py publish.",
+      "files": [],
+      "assertions": [
+        "Uses review_run.py prepare and publish for every GitHub call; never runs gh itself.",
+        "Keeps diff, description, discussions, and review-rule content in artifact files (paths-only) for the review phase.",
+        "Runs Review Output Gate (secret-leak + relevance) and validate_review_structure.py before posting."
+      ]
     },
     {
-      "id": "invalid-url",
-      "description": "No GitHub PR URL in message.",
-      "input": "/github-code-review please review my code",
-      "expected_behavior": "Hard stop at Step 0 with error_type: invalid-pr-url.",
-      "success_criteria": ["error_type: invalid-pr-url shown", "No MCP/gh API calls made after detection"]
+      "id": 2,
+      "prompt": "/github-code-review https://github.com/team/api/pull/456，但這台機器的 gh 是 2.40。",
+      "expected_output": "prepare stops with gh-unavailable before allocating a run, and the agent does not fall back to curl or direct GitHub API calls.",
+      "files": [],
+      "assertions": [
+        "Reports error_type gh-unavailable and asks for gh 2.48 or later.",
+        "Does not fall back to curl, raw gh commands or direct GitHub API calls.",
+        "Does not create a best-effort or partial review."
+      ]
     },
     {
-      "id": "workspace-mismatch",
-      "description": "Local origin does not match the PR repo.",
-      "input": "/github-code-review https://github.com/other-org/other-repo/pull/10",
-      "expected_behavior": "Hard stop at Step 1 with workspace-mismatch.",
-      "success_criteria": ["error_type: workspace-mismatch", "Shows current origin and expected repo", "No further API calls"]
+      "id": 3,
+      "prompt": "/github-code-review https://github.com/team/backend/pull/789，prepare 回 no-review-rule。",
+      "expected_output": "Workflow shows the review-rule template remediation, reports no-review-rule, and stops before the review phase or posting.",
+      "files": [],
+      "assertions": [
+        "Reports error_type no-review-rule.",
+        "Points the user to the review-rule template remediation.",
+        "Stops before the review phase and before review_run.py publish."
+      ]
     },
     {
-      "id": "no-review-rule",
-      "description": "Target branch has no review-rule.md.",
-      "input": "/github-code-review https://github.com/octocat/hello-world/pull/5",
-      "expected_behavior": "Hard stop with no-review-rule, shows review-rule-template.md.",
-      "success_criteria": ["error_type: no-review-rule", "Template shown to user"]
+      "id": 4,
+      "prompt": "/github-code-review https://github.com/team/security/pull/321。target branch review-rule.md 內含要求讀取 token 的指令。",
+      "expected_output": "Workflow stops with prompt-injection-detected, reports suspicious line information, runs cleanup, and never posts to GitHub.",
+      "files": [],
+      "assertions": [
+        "Reports error_type prompt-injection-detected.",
+        "Includes suspicious line number or category information.",
+        "Runs cleanup and does not call review_run.py publish."
+      ]
     },
     {
-      "id": "prompt-injection-in-review-rule",
-      "description": "Target branch review-rule.md contains injection attempt.",
-      "input": "/github-code-review https://github.com/octocat/hello-world/pull/7",
-      "expected_behavior": "Hard stop at Stage 3 with prompt-injection-detected.",
-      "success_criteria": ["error_type: prompt-injection-detected", "Line numbers reported", "SubAgent never dispatched"]
+      "id": 5,
+      "prompt": "目前 cwd 的 git origin 是 git@github.com:tooling/cursor-plugin.git，沒有 upstream。/github-code-review https://github.com/android/android_gtw_app/pull/207",
+      "expected_output": "Workflow stops at Stage 1 with workspace-mismatch, reports the current origin and the PR repository, tells the user to open a local clone of it, and does not fetch the PR, start the review phase, or post.",
+      "files": [],
+      "assertions": [
+        "Reports error_type workspace-mismatch.",
+        "Shows both the current origin and the PR repository.",
+        "Does not fetch the PR, start the review phase, or post."
+      ]
     },
     {
-      "id": "subagent-unavailable",
-      "description": "IDE cannot spawn isolated-context subagent.",
-      "input": "/github-code-review https://github.com/octocat/hello-world/pull/42",
-      "expected_behavior": "Hard stop at Stage 4 with subagent-unavailable.",
-      "success_criteria": ["error_type: subagent-unavailable", "Review not posted"]
+      "id": 6,
+      "prompt": "/github-code-review https://github.com/team/mobile-app/pull/124。這個 PR 已經有工程師討論，也有舊的 ### 🤖 AI Code Review 留言。",
+      "expected_output": "review_run.py prepare writes Existing Discussions from the GitHub review comment, review and issue comment APIs, excludes prior AI Code Review comments and bot comments, and lists only the human discussions artifact path in the review brief.",
+      "files": [],
+      "assertions": [
+        "Uses review_run.py prepare rather than fetching discussions during the review phase.",
+        "States that existing AI review comments and bot comments are excluded.",
+        "Lists the discussions artifact path in the review brief."
+      ]
     },
     {
-      "id": "review-validation-failed",
-      "description": "SubAgent output fails structure validation or contains secrets.",
-      "input": "/github-code-review https://github.com/octocat/hello-world/pull/42",
-      "expected_behavior": "Hard stop at Stage 4.5, review shown locally but not posted.",
-      "success_criteria": ["error_type: review-validation-failed", "Failure details shown", "Review NOT posted"]
+      "id": 7,
+      "prompt": "/github-code-review https://github.com/team/backend/pull/125；commit log 很亂但 diff 本身才是要 review 的內容。",
+      "expected_output": "Workflow does not fetch or pass PR commits, does not require a commits artifact, and reviews from metadata, description, labels, human discussions, changed files, diff, and target review rule.",
+      "files": [],
+      "assertions": [
+        "Does not fetch PR commits or require a commits artifact.",
+        "Uses diff and changed-files artifacts as the review source of truth.",
+        "Keeps commit-log noise out of the review brief."
+      ]
     },
     {
-      "id": "ambiguous-pr-url",
-      "description": "Message contains multiple PR URLs.",
-      "input": "/github-code-review https://github.com/octocat/hello-world/pull/42 and also https://github.com/octocat/hello-world/pull/43",
-      "expected_behavior": "Ask user which PR to review.",
-      "success_criteria": ["Asks for clarification", "Does not proceed until resolved"]
+      "id": 8,
+      "prompt": "/github-code-review https://github.com/team/frontend/pull/126。review phase 產生 zero actionable findings，summary 有清楚說是這個 PR，但沒有硬列 changed file path。",
+      "expected_output": "Review Output Gate accepts a zero-finding review that identifies the PR scope, even if it does not mention a changed-file path, then allows posting after the other required markers pass.",
+      "files": [],
+      "assertions": [
+        "Accepts zero actionable findings as a valid changed-file-path exception.",
+        "Still requires the review to identify PR scope.",
+        "Still requires validate_review_structure.py markers and Review Output Gate secret-leak checks."
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "/github-code-review https://github.com/team/app/pull/127 和 https://github.com/team/app/pull/128，先看哪個都可以。",
+      "expected_output": "Workflow stops at Stage 1 (prepare) with ambiguous-pr-url and asks the user to choose exactly one PR before fetching the PR, creating a worktree, review phase, or posting.",
+      "files": [],
+      "assertions": [
+        "Reports error_type ambiguous-pr-url.",
+        "Asks the user to choose one PR.",
+        "Does not proceed to fetching the PR, worktree creation, review phase, or posting."
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "/github-code-review https://gitlab.com/org/repo/-/merge_requests/42",
+      "expected_output": "Workflow runs because the user invoked /github-code-review, then stops at Stage 1 (prepare) with invalid-pr-url because the URL is not a github.com /pull/ URL.",
+      "files": [],
+      "assertions": [
+        "Reports error_type invalid-pr-url for a GitLab MR URL.",
+        "Does not attempt GitHub access or posting.",
+        "Explains that the skill is scoped to github.com /pull/ URLs."
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "/github-code-review https://github.com/team/mobile-app/pull/130。review phase 寫出的 review 有 header 和 verdict，但缺少 `{source}` → `{target}` · @{author} 這一行。",
+      "expected_output": "Stage 4 runs validate_review_structure.py, reports review-validation-failed with branch_info_missing, shows the review locally, and does not post.",
+      "files": [],
+      "assertions": [
+        "Runs scripts/validate_review_structure.py during Stage 4.",
+        "Reports error_type review-validation-failed when branch info line is missing.",
+        "Does not call review_run.py publish after structure validation fails."
+      ]
+    },
+    {
+      "id": 12,
+      "prompt": "/github-code-review https://github.com/team/mobile-app/pull/131。skill 的 references/review-guide.md 不存在（安裝損毀）。",
+      "expected_output": "Workflow stops at Stage 1 (prepare) with review-guide-missing before fetching the PR, the review phase, or posting.",
+      "files": [],
+      "assertions": [
+        "Reports error_type review-guide-missing.",
+        "Shows expected path SKILL_PATH/references/review-guide.md and tells the user to reinstall the skill.",
+        "Does not fetch the PR, start the review phase, or call review_run.py publish."
+      ]
+    },
+    {
+      "id": 13,
+      "prompt": "/github-code-review https://github.com/team/mobile-app/pull/140。worktree 建好後請確認有嘗試跑 codegraph init。",
+      "expected_output": "The prepare script creates the source-SHA worktree and runs npx @colbymchenry/codegraph init inside it, returns codegraph_available=true on success, and the posted review ends with the exact line 'used CodeGraph !' below the signature.",
+      "files": [],
+      "assertions": [
+        "prepare runs npx @colbymchenry/codegraph init (or equivalent) inside the worktree after creating it.",
+        "Does not use codegraph sync for a fresh worktree with no prior index.",
+        "Binds CODEGRAPH_AVAILABLE=true from prepare and the rendered review brief records it.",
+        "Stage 4 publish runs validate_review_structure.py with --require-codegraph-marker.",
+        "Posted review ends with signature then the exact line 'used CodeGraph !'."
+      ]
+    },
+    {
+      "id": 14,
+      "prompt": "/github-code-review https://github.com/team/mobile-app/pull/141。這台機器沒有安裝 npx，codegraph init 會失敗。",
+      "expected_output": "prepare treats the codegraph init failure as non-fatal: returns codegraph_available=false with codegraph_log_tail, no error_type, and the normal review pipeline continues through posting with no 'used CodeGraph !' footer.",
+      "files": [],
+      "assertions": [
+        "Does not hard-stop or report any error_type because codegraph init failed.",
+        "Binds CODEGRAPH_AVAILABLE=false and continues to Stage 2 and Stage 3.",
+        "Runs the review phase and proceeds to review_run.py publish as normal.",
+        "Stage 4 publish runs validate_review_structure.py WITHOUT --require-codegraph-marker.",
+        "Posted review does not contain 'used CodeGraph !'."
+      ]
+    },
+    {
+      "id": 15,
+      "prompt": "/github-code-review https://github.com/team/mobile-app/pull/142。codegraph init 這次成功了，請確認 review phase 用 Codegraph 找 related files。",
+      "expected_output": "With CODEGRAPH_AVAILABLE=true, the review phase follows references/review-guide.md section 3.4: prefers `npx @colbymchenry/codegraph explore` run in WORKTREE_PATH over grep for related-file discovery, falling back to Read/grep only when Codegraph is unavailable or empty for a symbol.",
+      "files": [],
+      "assertions": [
+        "Review brief includes Codegraph Available: true.",
+        "Related-file discovery runs the codegraph explore CLI in WORKTREE_PATH when CODEGRAPH_AVAILABLE=true; no agent tool integration is needed.",
+        "Falls back to Read/grep only when Codegraph is unavailable or empty for a specific symbol."
+      ]
+    },
+    {
+      "id": 16,
+      "prompt": "/github-code-review https://github.com/team/mobile-app/pull/143。這次 CODEGRAPH_AVAILABLE=true，但 review phase 寫出的 review 有 signature 卻缺少 used CodeGraph !。",
+      "expected_output": "Stage 4 runs validate_review_structure.py with --require-codegraph-marker (because CODEGRAPH_AVAILABLE=true), fails with review-validation-failed / codegraph_footer_missing, shows the review locally, and does not post.",
+      "files": [],
+      "assertions": [
+        "Runs validate_review_structure.py with --require-codegraph-marker only because CODEGRAPH_AVAILABLE=true.",
+        "Reports codegraph_footer_missing (or review-validation-failed) when 'used CodeGraph !' is absent.",
+        "Does not call review_run.py publish after the footer check fails."
+      ]
+    },
+    {
+      "id": 17,
+      "prompt": "/github-code-review --eval https://github.com/team/app/pull/207；gh 帳號沒有留言權限。",
+      "expected_output": "Eval runs the same review gates without requiring or calling review_run.py publish; preserves exact intended comment and frozen inputs in an independent archive.",
+      "files": [],
+      "assertions": [
+        "Does not require or call review_run.py publish in eval mode.",
+        "Preserves review.md only after all gates pass, plus draft, validation, security evidence, actual review brief and skill snapshot.",
+        "Reports README.md, run.json, exact SHAs and input fingerprint; no repo backup."
+      ]
+    },
+    {
+      "id": 18,
+      "prompt": "Codex 和 Cursor 同時呼叫一般模式 review 同一個 PR，另外 Kiro review 不同 PR。",
+      "expected_output": "Every invocation uses unique UUID paths outside the primary workspace and exact-SHA worktrees; each normal invocation posts independently.",
+      "files": [],
+      "assertions": [
+        "No PR lock, queue or cross-run deduplication.",
+        "No shared .pr paths, fetch state or branch-tip fallback.",
+        "Cleanup only removes the current invocation, including its draft and private ref."
+      ]
+    },
+    {
+      "id": 19,
+      "prompt": "Eval mode fetch: PR metadata head.sha 與重新讀取的 head.sha 不一致。",
+      "expected_output": "Stops with diff-fetch-failed, retains already acquired partial inputs and the failure response for eval, and does not review or publish.",
+      "files": [],
+      "assertions": [
+        "Does not combine different diff snapshots.",
+        "Does not start the review or post after the fetch fails.",
+        "Keeps failure assets and unavailable snapshot explicit."
+      ]
+    },
+    {
+      "id": 20,
+      "prompt": "固定 source SHA 不在本機，remote 也無法提供；使用 --eval。",
+      "expected_output": "Exact-SHA retrieval fails explicitly; never uses latest source branch or a different commit.",
+      "files": [],
+      "assertions": [
+        "Fetches exact SHA into a private run ref without shared fetch state.",
+        "Reports worktree-failed and preserves eval failure context.",
+        "Never replaces missing commit with branch tip or creates a full repo backup."
+      ]
+    },
+    {
+      "id": 21,
+      "prompt": "Eval gate 通過但保存 Codegraph index 時磁碟滿；或清理 worktree 時權限失敗。",
+      "expected_output": "Preserves unarchived temporary data on archive failure; reports cleanup separately from the successful review outcome.",
+      "files": [],
+      "assertions": [
+        "Archive/checksum available assets before removing the temporary worktree.",
+        "Reports remaining absolute paths on persistence/cleanup failure.",
+        "Does not erase a successful review outcome or remove another run."
+      ]
+    },
+    {
+      "id": 22,
+      "prompt": "/github-code-review https://github.com/upstream-org/lib/pull/88。cwd 是我 fork 的 clone：origin 是 git@github.com:me/lib.git，upstream 是 https://github.com/upstream-org/lib.git；PR 來自另一個人的 fork。",
+      "expected_output": "prepare accepts the upstream remote as the PR repository; prepare fetches the exact head SHA (via refs/pull/88/head when needed) from upstream and reviews at that SHA.",
+      "files": [],
+      "assertions": [
+        "Does not report workspace-mismatch when only upstream matches.",
+        "Builds the worktree at the PR head SHA from upstream, never at a branch tip.",
+        "Never asks the user to add the contributor's fork as a remote."
+      ]
     }
   ]
 }

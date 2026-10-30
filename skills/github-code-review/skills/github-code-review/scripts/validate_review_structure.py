@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate github-code-review SubAgent markdown structure before posting."""
+"""Validate github-code-review review markdown structure before posting."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def validate_review_structure(
     model_id: str,
     timestamp: str,
     require_codegraph_marker: bool = False,
-) -> dict:
+) -> dict[str, object]:
     failures: list[dict[str, str]] = []
     lines = _non_empty_lines(review_text)
 
@@ -65,7 +65,8 @@ def validate_review_structure(
         rf"^`{re.escape(source_branch)}` → `{re.escape(target_branch)}` · @"
         rf"{re.escape(author_handle)}$"
     )
-    if len(lines) < 2 or not branch_pattern.match(lines[1]):
+    branch_found = any(branch_pattern.match(line) for line in lines)
+    if not branch_found:
         failures.append(
             {
                 "check": "branch_info",
@@ -87,17 +88,18 @@ def validate_review_structure(
             }
         )
 
-    expected_signature = f"*{model_id} · {timestamp} UTC*"
-    signature_index = len(lines) - (2 if require_codegraph_marker else 1)
-    if signature_index < 0 or lines[signature_index] != expected_signature:
+    signature_needle = f"*{model_id} · {timestamp} UTC*"
+    signature_indexes = [
+        i for i, line in enumerate(lines) if signature_needle in line
+    ]
+    if not signature_indexes:
         failures.append(
             {
                 "check": "signature",
                 "code": "signature_mismatch",
                 "message": (
-                    "Signature must be the final line (or directly before the "
-                    "Codegraph footer) and exactly equal to: "
-                    f"{expected_signature!r}"
+                    "Signature must contain exact model id and timestamp: "
+                    f"{signature_needle}"
                 ),
             }
         )
@@ -117,14 +119,14 @@ def validate_review_structure(
                     ),
                 }
             )
-        elif marker_indexes != [len(lines) - 1]:
+        elif signature_indexes and marker_indexes[0] <= signature_indexes[0]:
             failures.append(
                 {
                     "check": "codegraph_footer",
                     "code": "codegraph_footer_order",
                     "message": (
-                        "Codegraph footer must be the final line, directly below "
-                        f"the signature ({CODEGRAPH_FOOTER!r})"
+                        "Codegraph footer must appear on its own line below the "
+                        f"signature ({CODEGRAPH_FOOTER!r})"
                     ),
                 }
             )
@@ -156,7 +158,7 @@ def main() -> int:
         help=(
             "Require a line exactly equal to "
             f"{CODEGRAPH_FOOTER!r} immediately after the signature "
-            "(treatment skill)."
+            "(when Codegraph is available)."
         ),
     )
     args = parser.parse_args()

@@ -1,88 +1,113 @@
 # github-code-review
 
-Version: `1.0.0`
+Version: `2.0.0`
 
-GitHub Pull Request code review pipeline using `gh` CLI: fetches PR context,
-creates a source-branch worktree, dispatches an isolated-context SubAgent for
-review, validates output, and posts the review as a PR comment.
+Code review for github.com pull requests. `gh` fetches the PR context, a
+detached worktree is built at the exact PR head SHA, and the same agent reads
+the change file by file with git in the **review phase**, writes the review,
+and posts it back to the PR once validation passes. `--eval` runs the same
+pipeline but saves every artifact instead of posting.
+
+Only `https://github.com/{owner}/{repo}/pull/{number}` URLs are in scope; any
+other host stops at Stage 1 (`prepare`) with `invalid-pr-url`.
 
 ## Architecture
 
 | Component | Responsibility |
 | --- | --- |
-| Skill (`github-code-review`) | Control: parse URL, validate workspace, create temp paths / worktree, run safety gates, dispatch SubAgent, post via `gh`. |
-| Skill (`github-code-review-with-codegraph`) | Treatment (eval): same as above, plus `codegraph init` in worktree, dispatches Codegraph SubAgent. |
-| SubAgent (isolated context) | Read artifact paths + worktree, apply target branch `review-rule.md`, produce structured review markdown. |
+| Skill agent (`SKILL.md`) | Only the two judgment steps: the review rule gate (Stage 2) and the review (Stage 3). Mechanical work goes to the script; the agent never copies the review, brief or API responses. |
+| `scripts/review_run.py` | Three calls. `prepare` (Stage 1): parse the PR URL, match `origin` or `upstream` to the PR repository, check `gh` 2.48+, allocate the run, read the PR through `gh api` into seven input files and `execution/pr-snapshot.json`, build the exact-SHA worktree (fork heads via `refs/pull/<n>/head`) and merge base, check that `git diff` lists GitHub's changed files, best-effort `codegraph init`, render the paths-only review brief. `publish` (Stage 4): structure check and Review Output Gate; only a pass writes `output/review.md`, which normal mode then posts byte for byte as one PR comment in the same process. `finish` (Stage 5): keep eval assets and clean up. Every step lands in `execution/stages.jsonl`. |
+| Review phase (`references/review-guide.md`, `references/review-brief.md`) | Stage 3, run by the same agent and model as the pipeline. Reads `git diff BASE_SHA SOURCE_SHA -- <path>` per file and writes only `output/review-draft.md`. |
 
-GitHub API I/O uses only `gh` CLI. SubAgent only receives parameters and
-artifact paths — no diff/discussions/review-rule pasted into prompt.
-No fallback review.
+No review subagent: hosts pick subagent models differently (Kiro falls back
+to `auto`), so the whole review stays in one agent. PR content reaches the
+review only as artifact paths and the worktree (paths-only). Every documented
+`error_type` stops the run; there is no fallback review.
 
-## Quick Start
+## Requirements
 
-1. Prerequisites:
+- Git >=2.36, uv, Python >=3.10 (the scripts use only the standard library)
+- [GitHub CLI](https://cli.github.com/) >=2.48, logged in: `gh auth login`.
+  The comment is posted as the active `gh` account (`gh auth switch` to change it).
+- Optional: Codegraph (`npx @colbymchenry/codegraph`); the review calls its CLI,
+  so no agent integration is needed
 
-```bash
-gh auth login
-# Verify:
-gh auth status
-```
+`gh` runs with your token, and an agent's shell can use it too; the skill
+only guarantees that the comment it posts passed every gate. To limit what
+an agent can do, run it with a [fine-grained token](https://github.com/settings/personal-access-tokens)
+scoped to the repository with only *Pull requests: read and write* and
+*Contents: read*, e.g. `GH_TOKEN=<token>`.
 
-2. Install Skill (copy to your IDE's skills directory):
-
-```bash
-REPO="<path-to>/github-code-review"
-
-# Cursor
-rsync -a --delete "$REPO/skills/github-code-review/" \
-  ~/.cursor/skills/github-code-review/
-
-# Treatment (optional, for codegraph eval)
-rsync -a --delete "$REPO/skills/github-code-review-with-codegraph/" \
-  ~/.cursor/skills/github-code-review-with-codegraph/
-```
-
-| IDE | Skills directory |
-| --- | --- |
-| Cursor | `~/.cursor/skills` |
-| Codex | `~/.codex/skills` |
-| Claude Code | `~/.claude/skills` |
-| Kiro | `~/.kiro/skills` |
-
-3. Add `review-rule.md` to your project's **target branch** (e.g. `main`):
+## Install
 
 ```bash
-cp ~/.cursor/skills/github-code-review/references/review-rule-template.md ./review-rule.md
+npx skills@latest add azrael8576/skills
 ```
 
-4. Run in matching local workspace:
+Or copy `skills/github-code-review/` into your agent's skills directory
+(`~/.claude/skills`, `~/.cursor/skills`, `~/.codex/skills`, `~/.kiro/skills`).
+
+Add `review-rule.md` to the PR's **target branch** (e.g. `main`), starting from
+[`references/review-rule-template.md`](./skills/github-code-review/references/review-rule-template.md).
+
+## Use
+
+Run from a local clone of the PR repository. In a fork clone, `upstream` may
+point at the PR repository instead of `origin`.
 
 ```text
 /github-code-review https://github.com/your-org/your-repo/pull/123
-/github-code-review-with-codegraph https://github.com/your-org/your-repo/pull/123
+/github-code-review --eval https://github.com/your-org/your-repo/pull/123
 ```
-
-Scope: GitHub URLs matching `https://github.com/{owner}/{repo}/pull/{number}`.
-Treatment skill requires `npx @colbymchenry/codegraph init` to be available.
 
 ## Pipeline
 
 ```text
-Step 0   Parse PR URL
-Step 1   Validate local workspace remote
-Step 2   Initialize temp paths
-Stage 1  GitHub access check (gh auth + PR readable)
-Stage 2  Materialize PR artifacts + create worktree
-Stage 3  Security gate on target review rule
-Stage 4  Dispatch SubAgent for context gathering + code review
-Stage 4.5 Validate review output
-Stage 5  Post final review through gh CLI
-Stage 6  Cleanup
-Final    Show review, status, and PR link
+Stage 1  prepare: PR URL + workspace remote + gh, fetch PR, worktree, Codegraph, brief
+Stage 2  Security gate on target review rule
+Stage 3  Review: follow review-guide, write the draft
+Stage 4  publish: validate the draft, then post (normal) or save (eval)
+Stage 5  finish: keep eval assets, clean temporary files
+Final    Show status, Verdict and links
 ```
 
-Treatment (`github-code-review-with-codegraph`) adds `codegraph init` in
-Stage 2 and dispatches a Codegraph-aware SubAgent in Stage 4.
+Eval runs are kept under `~/cr-evals/github.com/<owner>/<repo>/pr-<number>/`;
+see [`references/run-artifacts.md`](./skills/github-code-review/references/run-artifacts.md).
+
+### Codegraph
+
+Codegraph is best effort. `prepare` runs `npx @colbymchenry/codegraph init` in
+the worktree:
+
+- Success → `CODEGRAPH_AVAILABLE=true`. The review phase finds related code
+  with `codegraph explore` first (`review-guide.md` §3.4), and the line after
+  the signature must be `used CodeGraph !`; `publish` checks it.
+- Failure, timeout or no `npx` → `CODEGRAPH_AVAILABLE=false`. The pipeline
+  continues with Read/grep and the review has no footer.
+
+### Gates
+
+- **Stage 2**: the agent reads the target branch's `review-rule.md` line by
+  line against `references/security-gates.md`; anything suspicious stops the
+  run with `prompt-injection-detected`.
+- **Stage 4**: `publish` runs the structure check
+  (`scripts/validate_review_structure.py`) and the Review Output Gate, and
+  confirms Stage 3 wrote nothing but the draft. Only a full pass writes
+  `output/review.md`, and only that file is posted.
+
+Review Output Gate rules (implemented in `scripts/review_run.py`; evidence
+records only the line number and category, never the matched text):
+
+| Category | Rule |
+| --- | --- |
+| `private-key` | `-----BEGIN … PRIVATE KEY-----` |
+| `certificate`, `ssh-key` | `-----BEGIN CERTIFICATE-----`; `ssh-rsa` / `ssh-ed25519` / `ecdsa-sha2-*` followed by `AAAA` key data |
+| `base64` | 80+ base64 characters mixing upper case, lower case and digits that are not in the PR diff |
+| `system-file` | a passwd line (`root:x:0:0:`) or a shadow hash (`user:$6$`) |
+| `token` | tokens starting with `glpat-`, `ghp_`, `gho_`, `sk-`, or `AKIA` plus 16 characters |
+| `env-dump` | 5 or more consecutive `KEY=value` lines |
+| `password` | `password` / `passwd` / `密碼` followed by `:`, `：` or `=` and a quoted string of 4+ characters (except `***`) |
+| relevance | when there are findings, the review cites at least one changed file's path or name |
 
 ## Output
 
@@ -91,25 +116,26 @@ Stage 2 and dispatches a Codegraph-aware SubAgent in Stage 4.
 
 `feature/login` → `main` · @author
 
-This PR adds login functionality with clean architecture, but error handling needs work.
+Adds login with a clean service layer; network errors are not handled yet.
 
 ---
 
 #### Error handling
 
-| Severity | Location | Issue |
-| --- | --- | --- |
-| 🔴 Critical | `auth_service.ts:42` | Network errors uncaught, may crash |
+| Severity | Item | Suggestion |
+|----------|------|------------|
+| 🔴 | `auth_service.ts:42` network errors are uncaught and crash the screen | Catch and surface a retryable error |
 
 ---
 
-**Verdict: Fix Critical issue before merge**
+**Verdict: Fix the critical issue before merge**
 
 ---
-*claude-4.6-sonnet · 2026-08-12 09:30 UTC*
+*claude-opus-5-5 · 2026-10-30 09:30 UTC*
+used CodeGraph !
 ```
 
-Treatment skill adds `used CodeGraph !` on its own line after signature.
+The `used CodeGraph !` line appears only when Codegraph indexed the worktree.
 
 ## File Layout
 
@@ -117,72 +143,32 @@ Treatment skill adds `used CodeGraph !` on its own line after signature.
 github-code-review/
 ├── CONTEXT.md
 ├── README.md
-├── skills/github-code-review/                        # control
-│   ├── SKILL.md
-│   ├── evals/evals.json
-│   ├── references/
-│   │   ├── error-contract.md
-│   │   ├── review-rule-template.md
-│   │   ├── security-gates.md
-│   │   ├── subagent-prompt.md          # dispatch template (includes contract)
-│   │   └── review-guide.md            # SubAgent's review procedure
-│   └── scripts/
-│       └── validate_review_structure.py
-└── skills/github-code-review-with-codegraph/         # treatment (eval)
+├── tests/
+│   ├── fake_gh.py                     # stands in for gh in tests
+│   └── test_review_run.py
+└── skills/github-code-review/
     ├── SKILL.md
     ├── evals/evals.json
-    └── references/
-        ├── error-contract.md
-        ├── review-rule-template.md
-        ├── security-gates.md
-        ├── subagent-prompt.md
-        └── review-guide-with-codegraph.md
+    ├── references/
+    │   ├── error-contract.md
+    │   ├── review-brief.md            # brief template (prepare renders execution/review-brief.md)
+    │   ├── review-guide.md            # review phase procedure
+    │   ├── review-rule-template.md
+    │   ├── run-artifacts.md           # eval artifact contract
+    │   └── security-gates.md
     └── scripts/
+        ├── review_run.py              # prepare / publish / finish
         └── validate_review_structure.py
 ```
 
-## Error Contract
+## Errors
 
-| Error | Source | Description |
-| --- | --- | --- |
-| `gh-auth-failed` | gh CLI | `gh auth status` failed; not authenticated. |
-| `permission-denied` | gh CLI | Token cannot access the repo or PR. |
-| `diff-fetch-failed` | gh CLI | PR diff empty or cannot be fetched. |
-| `discussions-fetch-failed` | gh CLI | PR comments cannot be fetched. |
-| `no-review-rule` | gh CLI | Target branch missing readable `review-rule.md`. |
-| `artifact-write-failed` | Local | Temp directory write failed. |
-| `post-failed` | gh CLI | Final review cannot be posted as PR comment. |
-| `unexpected-error` | gh CLI | Unmapped GitHub API failure. |
-| `invalid-pr-url` | Local | No parseable GitHub `/pull/` URL. |
-| `ambiguous-pr-url` | Local | Multiple PR URLs; need clarification. |
-| `workspace-mismatch` | Local | Local workspace origin does not match PR repo. |
-| `worktree-failed` | Local | Source-branch worktree creation failed. |
-| `worktree-permission-denied` | Local | Filesystem permission blocks worktree creation. |
-| `codegraph-init-failed` | Local | Treatment: worktree `codegraph init` failed. |
-| `subagent-unavailable` | Local | IDE/LLM provider cannot spawn isolated-context subagent. |
-| `prompt-injection-detected` | Local | Target branch `review-rule.md` triggers security gate. |
-| `review-validation-failed` | Local | SubAgent output failed pre-posting validation. |
-
-## SubAgent Design
-
-The SubAgent is **not** an IDE-specific agent definition. It is spawned as an
-isolated-context session using whatever mechanism the IDE/LLM provider supports:
-
-- **Cursor**: Task tool with `subagent_type`
-- **Claude Code**: native subagent dispatch
-- **Codex**: spawn mechanism
-- **Kiro**: agent dispatch
-
-If the provider cannot create an isolated context, the workflow hard-stops with
-`subagent-unavailable`. The SubAgent's full instructions (contract + parameters)
-live in `references/subagent-prompt.md`; its review procedure lives in
-`references/review-guide.md`.
+See [`references/error-contract.md`](./skills/github-code-review/references/error-contract.md).
 
 ## Development
 
 ```bash
-# Validate review structure locally
-echo "review content" | python3 skills/github-code-review/skills/github-code-review/scripts/validate_review_structure.py \
-  --pr-number 42 --source feature/x --target main --author octocat \
-  --model-id "claude-4.6-sonnet" --timestamp "2026-08-12 09:30"
+uv run --no-project --python ">=3.10" --with pytest python -m pytest tests
 ```
+
+`tests/fake_gh.py` stands in for `gh`, so the tests make no network calls.
