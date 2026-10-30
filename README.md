@@ -15,5 +15,7 @@ npx skills@latest add azrael8576/skills
 | Name | Version | Description | Docs |
 | --- | --- | --- | --- |
 | `git-smart-commit` | `1.0.0` | Git commit orchestrator — groups changes into atomic logical units and writes Conventional Commit messages in English. | [SKILL.md](./skills/git-smart-commit/SKILL.md) |
-| `github-code-review` | `1.0.0` | GitHub PR review pipeline using `gh` CLI; posts one validated comment. | [SKILL.md](./skills/github-code-review/skills/github-code-review/SKILL.md) |
-| `github-code-review-with-codegraph` | `1.0.0` | GitHub PR review pipeline with Codegraph context gathering. | [SKILL.md](./skills/github-code-review/skills/github-code-review-with-codegraph/SKILL.md) |
+| `github-code-review` | `2.0.0` | Manual GitHub PR review pipeline using gh CLI; posts a validated comment or saves an isolated eval run. Run `/github-code-review <PR URL>`. | [README.md](./skills/github-code-review/README.md) |
+| `gitlab-mr-description` | — | Writes a paste-ready GitLab MR title and description in 繁體中文 from the repository template. | [SKILL.md](./skills/gitlab-mr-description/SKILL.md) |
+
+Install steps, pipelines and error contracts live in each skill's own README or SKILL.md.
