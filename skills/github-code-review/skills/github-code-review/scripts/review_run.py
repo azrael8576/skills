@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Own one CR invocation: private paths, exact-SHA worktree, compact eval archive.
 
-GitHub I/O goes only through `gh api` (fetch_pr in prepare, _post in publish). No model execution or global PR lock lives here.
+GitHub I/O goes only through `gh api` (materialize in stage2, post in Stage 6). No model execution or global PR lock lives here.
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ import tempfile
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, astuple, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Generic, TypeVar
 from urllib.parse import quote, urlsplit
 
 PR_HOST = "github.com"
-SNAPSHOT_FILE = "execution/pr-snapshot.json"
+SNAPSHOT_FILE = "execution/materialize-response.json"
 
 
 @dataclass(frozen=True)
@@ -202,7 +202,7 @@ def initialize(
             "cleanup": {"status": "not_run", "remaining_paths": [str(temporary)]}, "files": [],
         }
         _write_json(archive / "run.json", manifest)
-        _record(archive, "stage1-prepare", started_at, started_at, "passed")
+        _record(archive, "prepare", started_at, started_at, "passed")
         return Result(value=run)
     except (RunFailure, OSError, ValueError, subprocess.SubprocessError) as exc:
         error = exc.error if isinstance(exc, RunFailure) else RunError("artifact-write-failed", str(exc))
@@ -277,7 +277,7 @@ SUMMARY_KEYS = {"PR_TITLE": "title", "PR_AUTHOR": "author", "SOURCE_BRANCH": "so
 
 
 # Stages run by the agent leave a file; its write time ends that stage.
-AGENT_STAGES = (("stage2-rule-gate", "output/security-gates.json"), ("stage3-review", "output/review-draft.md"))
+AGENT_STAGES = (("stage3-rule-gate", "output/security-gates.json"), ("stage4-review", "output/review-draft.md"))
 
 
 def _stages(root: Path) -> list[dict[str, str]]:
@@ -300,30 +300,28 @@ def _catch_up(root: Path) -> None:
         if not path.is_file() or any(line["stage"] == stage for line in recorded):
             continue
         status, error = "passed", None
-        if stage == "stage2-rule-gate":
+        if stage == "stage3-rule-gate":
             rule = _json(path).get("rule")
             status = str(rule.get("status")) if isinstance(rule, dict) else "failed"
-        elif path.suffix == ".json" and (payload := _json(path)).get("success") is not True:
-            status, error = "failed", {"error_type": str(payload.get("error_type")), "message": str(payload.get("message"))}
         finished = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
         started = datetime.fromisoformat(recorded[-1]["finished_at"]) if recorded else finished
         _record(root, stage, min(started, finished), finished, status, error)
 
 
 def _snapshot(run: Run) -> dict[str, object]:
-    """The saved PR snapshot, verified complete; its artifacts must sit in this run's input/."""
+    """The saved materialize response, verified complete; its artifacts must sit in this run's input/."""
     response = Path(run.run_dir) / SNAPSHOT_FILE
     if not response.is_file():
-        raise RunFailure("artifact-write-failed", f"Missing PR snapshot: {response}")
+        raise RunFailure("artifact-write-failed", f"Missing materialize response: {response}")
     payload = _json(response)
     if payload.get("success") is not True:
         raise RunFailure(str(payload.get("error_type") or "artifact-write-failed"), str(payload.get("message") or "Fetching the PR failed"))
     paths, summary = payload.get("artifact_paths"), payload.get("pr_summary")
     if not isinstance(paths, dict) or not isinstance(summary, dict) or not isinstance(payload.get("review_rule_changed_in_pr"), bool):
-        raise RunFailure("artifact-write-failed", "PR snapshot lacks artifact_paths, pr_summary or review_rule_changed_in_pr")
+        raise RunFailure("artifact-write-failed", "Materialize response lacks artifact_paths, pr_summary or review_rule_changed_in_pr")
     for key in SUMMARY_KEYS.values():
         if not isinstance(summary.get(key), str) or not summary[key].strip():
-            raise RunFailure("artifact-write-failed", f"PR snapshot lacks pr_summary.{key}")
+            raise RunFailure("artifact-write-failed", f"Materialize response lacks pr_summary.{key}")
     inputs = Path(run.run_dir) / "input"
     for key in ARTIFACT_KEYS:
         value = paths.get(key)
@@ -344,14 +342,14 @@ def _template(skill: Path) -> str:
 
 
 def render_brief(run: Run, codegraph_available: bool, now: datetime) -> Result[dict[str, str]]:
-    """Write the paths-only review brief the agent reads at Stage 3."""
+    """Write the paths-only review brief the agent reads at Stage 4."""
     try:
         payload = _snapshot(run)
         summary, paths, snapshot = payload["pr_summary"], payload["artifact_paths"], payload.get("snapshot")
         assert isinstance(summary, dict) and isinstance(paths, dict)
         if not isinstance(snapshot, dict):
-            raise RunFailure("artifact-write-failed", "PR snapshot has no snapshot SHAs")
-        timestamp = now.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            raise RunFailure("artifact-write-failed", "Materialize response has no snapshot")
+        timestamp = now.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
         root = Path(run.run_dir)
         values = {"PR_NUMBER": str(run.pr_number), "PROJECT_PATH": run.project, "MODEL_ID": run.model_id,
                   "REVIEW_TIMESTAMP": timestamp, "USER_LANG": run.language, "WORKTREE_PATH": run.worktree_path,
@@ -367,7 +365,7 @@ def render_brief(run: Run, codegraph_available: bool, now: datetime) -> Result[d
                 raise RunFailure("artifact-write-failed", f"Unknown prompt placeholder: {match.group(0)}")
             return values[match.group(1)]
 
-        # One pass, so braces inside values (e.g. an PR title) are never expanded.
+        # One pass, so braces inside values (e.g. a PR title) are never expanded.
         text = re.sub(r"\{([A-Za-z_][\w.]*)\}", substitute, _template(Path(run.skill_path)))
         manifest = _json(root / "run.json")
         manifest["bindings"] = {"review_timestamp": timestamp, "codegraph_available": codegraph_available}
@@ -411,8 +409,8 @@ def output_gate_failures(review: str, changed_files: list[str], diff: str) -> li
     return failures
 
 
-def validate(run: Run, clock: Callable[[], datetime]) -> Result[dict[str, object]]:
-    """Stage 4 validation: structure validator + output gate; only a passing draft becomes output/review.md."""
+def finalize(run: Run, clock: Callable[[], datetime]) -> Result[dict[str, object]]:
+    """Stage 5: structure validator + output gate; only a passing draft becomes output/review.md."""
     root = Path(run.run_dir)
     draft, review, gates_path = root / "output/review-draft.md", root / "output/review.md", root / "output/security-gates.json"
     _catch_up(root)
@@ -449,12 +447,12 @@ def validate(run: Run, clock: Callable[[], datetime]) -> Result[dict[str, object
             raise RunFailure("review-validation-failed", "; ".join(failures))
         _write(review, draft.read_bytes())
         verdict = next((line.strip() for line in text.splitlines() if line.startswith("**Verdict")), None)
-        _record(root, "stage4-validate", started, clock(), "passed")
+        _record(root, "stage5-finalize", started, clock(), "passed")
         return Result(value={"ok": True, "verdict": verdict, "review_path": str(review)})
     except (RunFailure, OSError, ValueError, subprocess.SubprocessError) as exc:
         review.unlink(missing_ok=True)
         error = exc.error if isinstance(exc, RunFailure) else RunError("review-validation-failed", str(exc))
-        _record(root, "stage4-validate", started, clock(), "failed", asdict(error))
+        _record(root, "stage5-finalize", started, clock(), "failed", asdict(error))
         return Result(error=error)
 
 
@@ -555,14 +553,32 @@ def _dict(value: object) -> dict[str, object]:
 AI_HEADER = "### 🤖 AI Code Review"
 
 
-def _human_discussions(kind: str, items: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Existing human discussion; bots and earlier AI reviews (posted under a human account by gh) are dropped."""
-    return [{"kind": kind, "id": item.get("id"), "author": _dict(item.get("user")).get("login"),
-             "body": item.get("body") or "", "created_at": item.get("created_at") or item.get("submitted_at"),
-             "updated_at": item.get("updated_at"), "state": item.get("state"), "path": item.get("path"),
-             "line": item.get("line"), "in_reply_to_id": item.get("in_reply_to_id")}
-            for item in items
-            if _dict(item.get("user")).get("type") != "Bot" and AI_HEADER not in str(item.get("body") or "")]
+def _is_human_note(item: dict[str, object]) -> bool:
+    """GitLab drops system notes; here bots and bodiless reviews (bare approvals) play that role. Earlier AI reviews go too."""
+    body = str(item.get("body") or "")
+    return _dict(item.get("user")).get("type") != "Bot" and bool(body.strip()) and AI_HEADER not in body
+
+
+def _note(kind: str, item: dict[str, object]) -> dict[str, object]:
+    # GitHub REST has no resolvable/resolved (GraphQL only), so the GitLab note keeps every field but those two.
+    position = {key: item.get(key) for key in ("path", "line", "side", "commit_id")} if kind == "review_comment" else None
+    return {"id": item.get("id"), "author": _dict(item.get("user")).get("login"), "body": item.get("body") or "",
+            "created_at": item.get("created_at") or item.get("submitted_at"), "updated_at": item.get("updated_at"),
+            "position": position, "type": kind}
+
+
+def _human_discussions(review_comments: list[dict[str, object]], reviews: list[dict[str, object]],
+                       issue_comments: list[dict[str, object]]) -> list[dict[str, object]]:
+    """GitLab's discussion shape: inline threads group replies under their root comment; the rest are single notes."""
+    threads: dict[object, list[dict[str, object]]] = {}
+    for item in review_comments:
+        threads.setdefault(item.get("in_reply_to_id") or item.get("id"), []).append(item)
+    discussions = [{"id": root, "individual_note": False, "notes": [_note("review_comment", item) for item in items if _is_human_note(item)]}
+                   for root, items in threads.items()]
+    discussions += [{"id": item.get("id"), "individual_note": True, "notes": [_note(kind, item)]}
+                    for kind, items in (("review", reviews), ("issue_comment", issue_comments))
+                    for item in items if _is_human_note(item)]
+    return [discussion for discussion in discussions if discussion["notes"]]
 
 
 def _unified_diff(change: dict[str, object]) -> str:
@@ -600,8 +616,8 @@ def _review_rule(gh: list[str], project: str, branch: str, rule_path: str) -> tu
     return content, commit, payload.get("sha")
 
 
-def fetch_pr(run: Run, gh: list[str], clock: Callable[[], datetime], rule_path: str = "review-rule.md") -> Result[dict[str, object]]:
-    """Stage 1 fetch: write the seven frozen inputs and the PR snapshot, also on failure."""
+def materialize(run: Run, gh: list[str], clock: Callable[[], datetime], rule_path: str = "review-rule.md") -> Result[dict[str, object]]:
+    """Stage 2 fetch (the GitLab MCP's materialize_mr_artifacts): write the seven frozen inputs and the response, also on failure."""
     root = Path(run.run_dir)
     response = root / SNAPSHOT_FILE
     started = clock()
@@ -632,13 +648,19 @@ def fetch_pr(run: Run, gh: list[str], clock: Callable[[], datetime], rule_path: 
         summary = _summary(pr)
         warnings = [{"type": "pr-state", "message": f"PR state is {summary['state']}"}] if summary["state"] != "open" else []
         warnings += [{"type": "draft", "message": "PR is marked as draft"}] if pr.get("draft") is True else []
-        metadata = {key: pr.get(key) for key in ("number", "title", "state", "draft", "merged", "html_url", "created_at", "updated_at", "changed_files")}
-        metadata.update(author=summary["author"], source_branch=summary["source"], target_branch=summary["target"],
-                        head_sha=source_sha, base_sha=target_sha, warnings=warnings,
-                        source_repo=_dict(head.get("repo")).get("full_name"), target_repo=_dict(base.get("repo")).get("full_name"))
+        merge_base = _sha(_gh(gh, [f"{repo}/compare/{target_sha}...{source_sha}", "--jq", ".merge_base_commit.sha"], "diff-fetch-failed"),
+                          "diff-fetch-failed", "Merge base")
         raw_labels = pr.get("labels")
         labels = [str(_dict(label).get("name")) for label in (raw_labels if isinstance(raw_labels, list) else [])
                   if _dict(label).get("name")]
+        # The GitLab MR fields GitHub has; author.name (extra call) and confidential (no GitHub equivalent) are gone.
+        metadata = {"success": True, "repo": run.project, "pr_number": number, "warnings": warnings, "pr": {
+            "id": pr.get("id"), "number": pr.get("number"), "title": str(pr.get("title") or ""),
+            "description": pr.get("body") or "", "labels": labels, "author": {"username": summary["author"]},
+            "web_url": pr.get("html_url"), "source_branch": summary["source"], "target_branch": summary["target"],
+            "source_project_id": _dict(head.get("repo")).get("id"), "target_project_id": _dict(base.get("repo")).get("id"),
+            "state": summary["state"], "draft": pr.get("draft") is True,
+            "diff_refs": {"head_sha": source_sha, "start_sha": target_sha, "base_sha": merge_base}}}
         write("metadata", "metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True))
         write("description", "description.md", str(pr.get("body") or ""))
         write("labels", "labels.txt", "\n".join(labels))
@@ -652,16 +674,13 @@ def fetch_pr(run: Run, gh: list[str], clock: Callable[[], datetime], rule_path: 
                    if not change.get("patch") and (int(str(change.get("additions") or 0)) + int(str(change.get("deletions") or 0))) > 0]
         if missing:
             raise RunFailure("diff-fetch-failed", f"GitHub returned no diff text for {len(missing)} file(s): {', '.join(missing)}")
-        merge_base = _sha(_gh(gh, [f"{repo}/compare/{target_sha}...{source_sha}", "--jq", ".merge_base_commit.sha"], "diff-fetch-failed"),
-                          "diff-fetch-failed", "Merge base")
         again = _gh_object(gh, f"{repo}/pulls/{number}", "diff-fetch-failed")
         if (_dict(again.get("head")).get("sha"), _dict(again.get("base")).get("sha")) != (source_sha, target_sha):
             raise RunFailure("diff-fetch-failed", "PR snapshot changed between metadata and diff; retry a new run")
         write("diff", "diff.txt", "\n".join(_unified_diff(change) for change in files))
         write("changed_files", "changed-files.txt", "\n".join(str(change.get("filename")) for change in files))
-        discussions = (_human_discussions("review_comment", _gh_pages(gh, f"{repo}/pulls/{number}/comments?per_page=100", "discussions-fetch-failed"))
-                       + _human_discussions("review", _gh_pages(gh, f"{repo}/pulls/{number}/reviews?per_page=100", "discussions-fetch-failed"))
-                       + _human_discussions("issue_comment", _gh_pages(gh, f"{repo}/issues/{number}/comments?per_page=100", "discussions-fetch-failed")))
+        discussions = _human_discussions(*(_gh_pages(gh, f"{repo}/{endpoint}?per_page=100", "discussions-fetch-failed") for endpoint in
+                                           (f"pulls/{number}/comments", f"pulls/{number}/reviews", f"issues/{number}/comments")))
         write("discussions", "discussions.txt", json.dumps(discussions, ensure_ascii=False, indent=2, sort_keys=True))
         rule, rule_commit, rule_blob = _review_rule(gh, run.project, str(summary["target"]), rule_path)
         write("target_review_rule", "target-review-rule.md", rule)
@@ -681,14 +700,14 @@ def fetch_pr(run: Run, gh: list[str], clock: Callable[[], datetime], rule_path: 
     except (RunFailure, OSError) as exc:
         return Result(error=exc.error if isinstance(exc, RunFailure) else RunError("artifact-write-failed", str(exc)))
     failed = None if payload["success"] is True else {"error_type": str(payload["error_type"]), "message": str(payload["message"])}
-    _record(root, "stage1-fetch", started, clock(), "failed" if failed else "passed", failed)
+    _record(root, "stage2-materialize", started, clock(), "failed" if failed else "passed", failed)
     if failed:
         return Result(error=RunError(failed["error_type"], failed["message"]))
     return Result(value={"snapshot_path": str(response)})
 
 
 def _post(run: Run, gh: list[str]) -> Result[dict[str, object]]:
-    """One PR comment with output/review.md byte for byte; only `publish` calls it, right after validation."""
+    """One PR comment with output/review.md byte for byte (the GitLab MCP's post_mr_review)."""
     review = Path(run.run_dir) / "output/review.md"
     try:
         comment = _dict(_gh_json(gh, [f"repos/{run.project}/issues/{run.pr_number}/comments", "--method", "POST",
@@ -700,33 +719,34 @@ def _post(run: Run, gh: list[str]) -> Result[dict[str, object]]:
         return Result(error=exc.error)
 
 
-def publish(run: Run, gh: list[str], clock: Callable[[], datetime]) -> Result[dict[str, object]]:
-    """Stage 4: validate the draft, then post it (normal) or keep it as the intended comment (eval)."""
-    validated = validate(run, clock)
-    if validated.error or validated.value is None:
-        return validated
+def post(run: Run, gh: list[str], clock: Callable[[], datetime]) -> Result[dict[str, object]]:
+    """Stage 6 (normal only): post the review finalize passed; the script, not the agent, records publish_status."""
     root = Path(run.run_dir)
     started = clock()
-    value: dict[str, object] = dict(validated.value)
-    status, error = "skipped_eval", None
-    if run.mode == "normal":
-        for _ in range(2):  # one retry for a transient failure
-            posted = _post(run, gh)
-            if posted.error is None:
-                break
-        status, error = ("failed", posted.error) if posted.error else ("posted", None)
-        value.update(posted.value or {})
     try:
         manifest = _json(root / "run.json")
+        stages = _stages(root)
+        if run.mode != "normal" or manifest.get("publish_status") != "not_attempted":
+            raise RunFailure("post-failed", f"Nothing to post: mode {run.mode}, publish_status {manifest.get('publish_status')}")
+        if not stages or stages[-1]["stage"] != "stage5-finalize" or stages[-1]["status"] != "passed" or not (root / "output/review.md").is_file():
+            raise RunFailure("review-validation-failed", "finalize has not passed for this draft; nothing was posted")
+    except (RunFailure, OSError, ValueError) as exc:
+        return Result(error=exc.error if isinstance(exc, RunFailure) else RunError("artifact-write-failed", str(exc)))
+    for _ in range(2):  # SKILL's "retry once on post-failed", kept in the script
+        posted = _post(run, gh)
+        if posted.error is None:
+            break
+    status, error = ("failed", posted.error) if posted.error else ("posted", None)
+    try:
         manifest["publish_status"] = status
-        manifest["comment_url"] = value.get("html_url")
+        manifest["comment_url"] = (posted.value or {}).get("html_url")
         _write_json(root / "run.json", manifest)
     except (RunFailure, OSError) as exc:
         error = exc.error if isinstance(exc, RunFailure) else RunError("artifact-write-failed", str(exc))
-    _record(root, "stage4-publish", started, clock(), status, asdict(error) if error else None)
+    _record(root, "stage6-publish", started, clock(), status, asdict(error) if error else None)
     if error:
         return Result(error=error)
-    return Result(value={**value, "publish_status": status})
+    return Result(value={**(posted.value or {}), "publish_status": status})
 
 
 def _codegraph(run: Run, command: list[str], timeout: float) -> bool:
@@ -772,7 +792,7 @@ def _check_change_list(run: Run, base_sha: str, source_sha: str, source_remote: 
     similarity thresholds, so a heavily edited rename lists one path on one side and two on the other.
     """
     if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
-        raise RunFailure("worktree-failed", "PR snapshot has no full merge base SHA")
+        raise RunFailure("worktree-failed", "Materialize response has no full merge base SHA")
     if _git(run.workspace, "cat-file", "-e", f"{base_sha}^{{commit}}").returncode != 0:
         fetch = _git(run.workspace, "fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
                      source_remote, f"{base_sha}:{_base_ref(run)}")
@@ -789,19 +809,21 @@ def _check_change_list(run: Run, base_sha: str, source_sha: str, source_remote: 
                          f"only local: {only_local}; only GitHub: {only_gitlab}")
 
 
-def prepare_local(run: Run, source_remote: str | None, codegraph_command: list[str], codegraph_timeout: float,
-                  clock: Callable[[], datetime]) -> Result[dict[str, object]]:
-    """Stage 1 local part: exact-SHA worktree, merge base, best-effort index, then the review brief."""
+def stage2(run: Run, gh: list[str], source_remote: str | None, codegraph_command: list[str], codegraph_timeout: float,
+           clock: Callable[[], datetime]) -> Result[dict[str, object]]:
+    """Stage 2: materialize the PR, then exact-SHA worktree, merge base, best-effort index and the review brief."""
     root = Path(run.run_dir)
     source_remote = source_remote or run.remote
-    _catch_up(root)
+    fetched = materialize(run, gh, clock)
+    if fetched.error:
+        return fetched
     started = clock()
     try:
         payload = _snapshot(run)
         snapshot, paths = payload.get("snapshot"), payload["artifact_paths"]
         assert isinstance(paths, dict)
         if not isinstance(snapshot, dict) or not isinstance(snapshot.get("source_sha"), str):
-            raise RunFailure("diff-fetch-failed", "PR snapshot has no snapshot.source_sha")
+            raise RunFailure("diff-fetch-failed", "Materialize response has no snapshot.source_sha")
         worktree = prepare_worktree(run, str(snapshot["source_sha"]), source_remote)
         if worktree.error:
             raise RunFailure(worktree.error.error_type, worktree.error.message)
@@ -817,15 +839,15 @@ def prepare_local(run: Run, source_remote: str | None, codegraph_command: list[s
         if not available:
             lines = (root / "execution/codegraph.log").read_text(encoding="utf-8", errors="replace").splitlines()
             result["codegraph_log_tail"] = "\n".join(lines[-20:])
-        _record(root, "stage1-worktree", started, clock(), "passed")
+        _record(root, "stage2-local", started, clock(), "passed")
         return Result(value=result)
     except (RunFailure, OSError, ValueError, subprocess.SubprocessError) as exc:
         error = exc.error if isinstance(exc, RunFailure) else RunError("worktree-failed", str(exc))
-        _record(root, "stage1-worktree", started, clock(), "failed", asdict(error))
+        _record(root, "stage2-local", started, clock(), "failed", asdict(error))
         return Result(error=error)
 
 
-# The review phase writes only the draft; gates are written by Stage 2 and publish (which rewrites them on a rerun).
+# The review phase writes only the draft; gates are written by Stage 3 and finalize (which rewrites them on a rerun).
 REVIEWER_OUTPUTS = {"review-draft.md", "security-gates.json", "validation.json", "review.md"}
 
 
@@ -958,7 +980,11 @@ def finish(run: Run, outcome: Outcome, finished_at: datetime) -> Result[dict[str
         ownership_verified = True
         _catch_up(root)
         manifest = _json(root / "run.json")
-        publish_status = manifest.get("publish_status")  # written by initialize and publish, never by the agent
+        publish_status = manifest.get("publish_status")  # written by initialize and post, never by the agent
+        stages = _stages(root)
+        if stages and stages[-1]["stage"] == "stage5-finalize" and stages[-1]["status"] == "passed":
+            # Eval saves instead of posting, so Stage 6 leaves no record of its own (as a normal run that never posted).
+            _record(root, "stage6-publish", datetime.fromisoformat(stages[-1]["finished_at"]), finished_at, str(publish_status))
         gates = _gates(root)
         draft, review = root / "output/review-draft.md", root / "output/review.md"
         if outcome.status == "completed" and (any(value != "passed" for value in gates.values()) or not draft.is_file() or (run.mode == "normal" and publish_status != "posted")):
@@ -975,7 +1001,7 @@ def finish(run: Run, outcome: Outcome, finished_at: datetime) -> Result[dict[str
             if payload.get("success") is True:
                 snapshot = payload.get("snapshot")
                 if not isinstance(snapshot, dict) or any(not isinstance(snapshot.get(key), str) or not re.fullmatch(r"[0-9a-f]{40}", str(snapshot[key])) for key in ("source_sha", "diff_target_sha", "merge_base_sha", "review_rule_commit_sha")):
-                    raise RunFailure("diff-fetch-failed", "Invalid PR snapshot")
+                    raise RunFailure("diff-fetch-failed", "Invalid materialized snapshot")
                 inputs = _files(root / "input")
                 if len(inputs) != 7:
                     raise RunFailure("artifact-write-failed", "Expected seven frozen input files for fingerprint")
@@ -983,7 +1009,7 @@ def finish(run: Run, outcome: Outcome, finished_at: datetime) -> Result[dict[str
                 context = {key: snapshot[key] for key in ("source_sha", "diff_target_sha", "merge_base_sha", "review_rule_commit_sha")}
                 fingerprint = hashlib.sha256(json.dumps({"snapshot": context, "inputs": [{"path": file["path"], "sha256": file["sha256"]} for file in inputs]}, sort_keys=True).encode()).hexdigest()
         if outcome.status == "completed" and fingerprint is None:
-            raise RunFailure("artifact-write-failed", "Completed runs require a PR snapshot and all seven frozen input files")
+            raise RunFailure("artifact-write-failed", "Completed runs require a materialized snapshot and all seven frozen input files")
         manifest.update(status=outcome.status, finished_at=finished_at.astimezone(timezone.utc).isoformat(),
                         gates=gates, failed_stage=outcome.failed_stage,
                         error=asdict(outcome.error) if outcome.error else None, snapshot=snapshot, input_fingerprint=fingerprint)
@@ -1037,22 +1063,19 @@ def finish(run: Run, outcome: Outcome, finished_at: datetime) -> Result[dict[str
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    # SKILL.md calls prepare, publish and finish; init, worktree, brief and local are its parts, kept for tests.
-    for command in ("init", "prepare"):
+    for command in ("init", "prepare"):  # prepare = URL parse + workspace remote + gh check + init
         create = commands.add_parser(command)
         for name in ("workspace", "skill-path", "ide", "model-id"):
             create.add_argument(f"--{name}", required=True)
         if command == "prepare":
             create.add_argument("--pr-url", required=True)
             create.add_argument("--gh-command", default="gh")
-            create.add_argument("--codegraph-command", default="npx @colbymchenry/codegraph init")
-            create.add_argument("--codegraph-timeout", type=float, default=600)
         else:
             create.add_argument("--project", required=True)
             create.add_argument("--pr-number", required=True, type=int)
             create.add_argument("--remote", default="origin")
         create.add_argument("--mode", default="normal")
-        create.add_argument("--language", default="English")
+        create.add_argument("--language", default="繁體中文")
         create.add_argument("--temp-root", default=str(Path(tempfile.gettempdir()).resolve()))
         create.add_argument("--eval-root", default=str(Path.home() / "cr-evals"))
     worktree = commands.add_parser("worktree")
@@ -1062,12 +1085,14 @@ def main() -> int:
     render = commands.add_parser("brief")
     render.add_argument("--run-dir", required=True)
     render.add_argument("--codegraph-available", required=True, choices=["true", "false"])
-    local = commands.add_parser("local")
+    local = commands.add_parser("stage2")
     local.add_argument("--run-dir", required=True)
     local.add_argument("--source-remote")
+    local.add_argument("--gh-command", default="gh")
     local.add_argument("--codegraph-command", default="npx @colbymchenry/codegraph init")
     local.add_argument("--codegraph-timeout", type=float, default=600)
-    release = commands.add_parser("publish")
+    commands.add_parser("finalize").add_argument("--run-dir", required=True)
+    release = commands.add_parser("post")
     release.add_argument("--run-dir", required=True)
     release.add_argument("--gh-command", default="gh")
     complete = commands.add_parser("finish")
@@ -1082,7 +1107,6 @@ def main() -> int:
     def clock() -> datetime:
         return datetime.now(timezone.utc)
 
-    allocated: str | None = None  # a run_dir the agent must hand to finish after a failure
     mismatch = None
     if args.command == "prepare":
         parsed = parse_pr_url(args.pr_url)
@@ -1100,16 +1124,11 @@ def main() -> int:
                              pr_number=args.pr_number, mode=args.mode, ide=args.ide, model_id=args.model_id,
                              language=args.language, temp_root=args.temp_root, eval_root=args.eval_root,
                              started_at=clock(), run_id=str(uuid.uuid4()), remote=args.remote)
-        if created.value is None or args.command == "init":
-            result = Result(value=asdict(created.value) if created.value else None, error=created.error)
-        else:
-            run, allocated = created.value, created.value.run_dir
-            fetched = fetch_pr(run, gh, clock)
-            staged = fetched if fetched.error else prepare_local(run, None, shlex.split(args.codegraph_command),
-                                                                 args.codegraph_timeout, clock)
+        value = asdict(created.value) if created.value else None
+        if value and args.command == "prepare":
             # Only what the main agent binds; every printed byte is re-read on each later turn.
-            identity = {key: asdict(run)[key] for key in ("run_id", "mode", "project", "pr_number", "run_dir", "skill_path")}
-            result = Result(value={**identity, **staged.value} if staged.value else None, error=staged.error)
+            value = {key: value[key] for key in ("run_id", "mode", "project", "pr_number", "run_dir", "worktree_path", "skill_path")}
+        result = Result(value=value, error=created.error)
     else:
         loaded = load_run(args.run_dir)
         if loaded.value is None:
@@ -1120,13 +1139,16 @@ def main() -> int:
         elif args.command == "brief":
             rendered = render_brief(loaded.value, args.codegraph_available == "true", clock())
             result = Result(value=rendered.value, error=rendered.error)
-        elif args.command == "local":
-            staged = prepare_local(loaded.value, args.source_remote, shlex.split(args.codegraph_command),
-                                   args.codegraph_timeout, clock)
+        elif args.command == "stage2":
+            staged = stage2(loaded.value, gh, args.source_remote, shlex.split(args.codegraph_command),
+                            args.codegraph_timeout, clock)
             result = Result(value=staged.value, error=staged.error)
-        elif args.command == "publish":
-            published = publish(loaded.value, gh, clock)
-            result = Result(value=published.value, error=published.error)
+        elif args.command == "finalize":
+            finalized = finalize(loaded.value, clock)
+            result = Result(value=finalized.value, error=finalized.error)
+        elif args.command == "post":
+            posted = post(loaded.value, gh, clock)
+            result = Result(value=posted.value, error=posted.error)
         else:
             outcome = Outcome(args.status, args.failed_stage,
                               RunError(args.error_type, args.message or "") if args.error_type else None)
@@ -1137,7 +1159,7 @@ def main() -> int:
                 summary["file_count"] = len(summary.pop("files"))  # type: ignore[arg-type]
             result = Result(value=summary, error=completed.error)
     if result.error:
-        print(json.dumps({"success": False, **asdict(result.error), **({"run_dir": allocated} if allocated else {})}))
+        print(json.dumps({"success": False, **asdict(result.error)}))
         return 1
     print(json.dumps(result.value))
     return 0

@@ -1,14 +1,14 @@
 {
   "skill_name": "github-code-review",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "evals": [
     {
       "id": 1,
       "prompt": "/github-code-review https://github.com/team/mobile-app/pull/123，請照 target branch 的 review-rule.md 審查並張貼回 PR。",
-      "expected_output": "The agent calls only the review_run.py scripts for GitHub I/O, fetches the PR into artifact files, keeps PR content in artifact files for the review phase, validates output, then posts through review_run.py publish.",
+      "expected_output": "The agent calls only the review_run.py scripts for GitHub I/O, fetches the PR into artifact files, keeps PR content in artifact files for the review phase, validates output, then posts through review_run.py post.",
       "files": [],
       "assertions": [
-        "Uses review_run.py prepare and publish for every GitHub call; never runs gh itself.",
+        "Uses review_run.py stage2 and post for every GitHub call; never runs gh itself.",
         "Keeps diff, description, discussions, and review-rule content in artifact files (paths-only) for the review phase.",
         "Runs Review Output Gate (secret-leak + relevance) and validate_review_structure.py before posting."
       ]
@@ -26,13 +26,13 @@
     },
     {
       "id": 3,
-      "prompt": "/github-code-review https://github.com/team/backend/pull/789，prepare 回 no-review-rule。",
+      "prompt": "/github-code-review https://github.com/team/backend/pull/789，stage2 回 no-review-rule。",
       "expected_output": "Workflow shows the review-rule template remediation, reports no-review-rule, and stops before the review phase or posting.",
       "files": [],
       "assertions": [
         "Reports error_type no-review-rule.",
         "Points the user to the review-rule template remediation.",
-        "Stops before the review phase and before review_run.py publish."
+        "Stops before the review phase and before review_run.py post."
       ]
     },
     {
@@ -43,7 +43,7 @@
       "assertions": [
         "Reports error_type prompt-injection-detected.",
         "Includes suspicious line number or category information.",
-        "Runs cleanup and does not call review_run.py publish."
+        "Runs cleanup and does not call review_run.py post."
       ]
     },
     {
@@ -60,10 +60,10 @@
     {
       "id": 6,
       "prompt": "/github-code-review https://github.com/team/mobile-app/pull/124。這個 PR 已經有工程師討論，也有舊的 ### 🤖 AI Code Review 留言。",
-      "expected_output": "review_run.py prepare writes Existing Discussions from the GitHub review comment, review and issue comment APIs, excludes prior AI Code Review comments and bot comments, and lists only the human discussions artifact path in the review brief.",
+      "expected_output": "review_run.py stage2 writes Existing Discussions from the GitHub review comment, review and issue comment APIs, excludes prior AI Code Review comments and bot comments, and lists only the human discussions artifact path in the review brief.",
       "files": [],
       "assertions": [
-        "Uses review_run.py prepare rather than fetching discussions during the review phase.",
+        "Uses review_run.py stage2 rather than fetching discussions during the review phase.",
         "States that existing AI review comments and bot comments are excluded.",
         "Lists the discussions artifact path in the review brief."
       ]
@@ -115,12 +115,12 @@
     {
       "id": 11,
       "prompt": "/github-code-review https://github.com/team/mobile-app/pull/130。review phase 寫出的 review 有 header 和 verdict，但缺少 `{source}` → `{target}` · @{author} 這一行。",
-      "expected_output": "Stage 4 runs validate_review_structure.py, reports review-validation-failed with branch_info_missing, shows the review locally, and does not post.",
+      "expected_output": "Stage 5 runs validate_review_structure.py, reports review-validation-failed with branch_info_missing, shows the review locally, and does not post.",
       "files": [],
       "assertions": [
-        "Runs scripts/validate_review_structure.py during Stage 4.",
+        "Runs scripts/validate_review_structure.py during Stage 5.",
         "Reports error_type review-validation-failed when branch info line is missing.",
-        "Does not call review_run.py publish after structure validation fails."
+        "Does not call review_run.py post after structure validation fails."
       ]
     },
     {
@@ -131,39 +131,39 @@
       "assertions": [
         "Reports error_type review-guide-missing.",
         "Shows expected path SKILL_PATH/references/review-guide.md and tells the user to reinstall the skill.",
-        "Does not fetch the PR, start the review phase, or call review_run.py publish."
+        "Does not fetch the PR, start the review phase, or call review_run.py post."
       ]
     },
     {
       "id": 13,
       "prompt": "/github-code-review https://github.com/team/mobile-app/pull/140。worktree 建好後請確認有嘗試跑 codegraph init。",
-      "expected_output": "The prepare script creates the source-SHA worktree and runs npx @colbymchenry/codegraph init inside it, returns codegraph_available=true on success, and the posted review ends with the exact line 'used CodeGraph !' below the signature.",
+      "expected_output": "The stage2 script creates the source-SHA worktree and runs npx @colbymchenry/codegraph init inside it, returns codegraph_available=true on success, and the posted review ends with the exact line 'used CodeGraph !' below the signature.",
       "files": [],
       "assertions": [
-        "prepare runs npx @colbymchenry/codegraph init (or equivalent) inside the worktree after creating it.",
+        "stage2 runs npx @colbymchenry/codegraph init (or equivalent) inside the worktree after creating it.",
         "Does not use codegraph sync for a fresh worktree with no prior index.",
-        "Binds CODEGRAPH_AVAILABLE=true from prepare and the rendered review brief records it.",
-        "Stage 4 publish runs validate_review_structure.py with --require-codegraph-marker.",
+        "Binds CODEGRAPH_AVAILABLE=true from stage2 and the rendered review brief records it.",
+        "Stage 5 finalize runs validate_review_structure.py with --require-codegraph-marker.",
         "Posted review ends with signature then the exact line 'used CodeGraph !'."
       ]
     },
     {
       "id": 14,
       "prompt": "/github-code-review https://github.com/team/mobile-app/pull/141。這台機器沒有安裝 npx，codegraph init 會失敗。",
-      "expected_output": "prepare treats the codegraph init failure as non-fatal: returns codegraph_available=false with codegraph_log_tail, no error_type, and the normal review pipeline continues through posting with no 'used CodeGraph !' footer.",
+      "expected_output": "stage2 treats the codegraph init failure as non-fatal: returns codegraph_available=false with codegraph_log_tail, no error_type, and the normal review pipeline continues through posting with no 'used CodeGraph !' footer.",
       "files": [],
       "assertions": [
         "Does not hard-stop or report any error_type because codegraph init failed.",
-        "Binds CODEGRAPH_AVAILABLE=false and continues to Stage 2 and Stage 3.",
-        "Runs the review phase and proceeds to review_run.py publish as normal.",
-        "Stage 4 publish runs validate_review_structure.py WITHOUT --require-codegraph-marker.",
+        "Binds CODEGRAPH_AVAILABLE=false and continues to Stage 3 and Stage 4.",
+        "Runs the review phase and proceeds to review_run.py finalize and post as normal.",
+        "Stage 5 finalize runs validate_review_structure.py WITHOUT --require-codegraph-marker.",
         "Posted review does not contain 'used CodeGraph !'."
       ]
     },
     {
       "id": 15,
       "prompt": "/github-code-review https://github.com/team/mobile-app/pull/142。codegraph init 這次成功了，請確認 review phase 用 Codegraph 找 related files。",
-      "expected_output": "With CODEGRAPH_AVAILABLE=true, the review phase follows references/review-guide.md section 3.4: prefers `npx @colbymchenry/codegraph explore` run in WORKTREE_PATH over grep for related-file discovery, falling back to Read/grep only when Codegraph is unavailable or empty for a symbol.",
+      "expected_output": "With CODEGRAPH_AVAILABLE=true, the review phase follows references/review-guide.md section 4.4: prefers the `codegraph_explore` MCP tool with projectPath WORKTREE_PATH (else `codegraph explore` in WORKTREE_PATH) over grep for related-file discovery, falling back to Read/grep only when Codegraph is unavailable or empty for a symbol.",
       "files": [],
       "assertions": [
         "Review brief includes Codegraph Available: true.",
@@ -174,21 +174,21 @@
     {
       "id": 16,
       "prompt": "/github-code-review https://github.com/team/mobile-app/pull/143。這次 CODEGRAPH_AVAILABLE=true，但 review phase 寫出的 review 有 signature 卻缺少 used CodeGraph !。",
-      "expected_output": "Stage 4 runs validate_review_structure.py with --require-codegraph-marker (because CODEGRAPH_AVAILABLE=true), fails with review-validation-failed / codegraph_footer_missing, shows the review locally, and does not post.",
+      "expected_output": "Stage 5 runs validate_review_structure.py with --require-codegraph-marker (because CODEGRAPH_AVAILABLE=true), fails with review-validation-failed / codegraph_footer_missing, shows the review locally, and does not post.",
       "files": [],
       "assertions": [
         "Runs validate_review_structure.py with --require-codegraph-marker only because CODEGRAPH_AVAILABLE=true.",
         "Reports codegraph_footer_missing (or review-validation-failed) when 'used CodeGraph !' is absent.",
-        "Does not call review_run.py publish after the footer check fails."
+        "Does not call review_run.py post after the footer check fails."
       ]
     },
     {
       "id": 17,
       "prompt": "/github-code-review --eval https://github.com/team/app/pull/207；gh 帳號沒有留言權限。",
-      "expected_output": "Eval runs the same review gates without requiring or calling review_run.py publish; preserves exact intended comment and frozen inputs in an independent archive.",
+      "expected_output": "Eval runs the same review gates without requiring or calling review_run.py post; preserves exact intended comment and frozen inputs in an independent archive.",
       "files": [],
       "assertions": [
-        "Does not require or call review_run.py publish in eval mode.",
+        "Does not require or call review_run.py post in eval mode.",
         "Preserves review.md only after all gates pass, plus draft, validation, security evidence, actual review brief and skill snapshot.",
         "Reports README.md, run.json, exact SHAs and input fingerprint; no repo backup."
       ]
@@ -240,7 +240,7 @@
     {
       "id": 22,
       "prompt": "/github-code-review https://github.com/upstream-org/lib/pull/88。cwd 是我 fork 的 clone：origin 是 git@github.com:me/lib.git，upstream 是 https://github.com/upstream-org/lib.git；PR 來自另一個人的 fork。",
-      "expected_output": "prepare accepts the upstream remote as the PR repository; prepare fetches the exact head SHA (via refs/pull/88/head when needed) from upstream and reviews at that SHA.",
+      "expected_output": "prepare accepts the upstream remote as the PR repository; stage2 fetches the exact head SHA (via refs/pull/88/head when needed) from upstream and reviews at that SHA.",
       "files": [],
       "assertions": [
         "Does not report workspace-mismatch when only upstream matches.",

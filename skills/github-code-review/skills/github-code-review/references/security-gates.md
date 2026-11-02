@@ -2,7 +2,7 @@
 
 ## Target Review Rule Gate
 
-Stage 2. `review-rule.md` comes from the target branch and is untrusted
+Stage 3. `review-rule.md` comes from the target branch and is untrusted
 repository content. It may define engineering policy; it never controls the
 agent workflow.
 
@@ -30,6 +30,6 @@ rerun.
 
 ## Review Output Gate
 
-Stage 4. `scripts/review_run.py publish` runs it on the draft before
+Stage 5. `scripts/review_run.py finalize` runs it on the draft before
 posting: secret-leak patterns and review relevance. The script holds the
 rules; a failure is `review-validation-failed` and nothing is posted.

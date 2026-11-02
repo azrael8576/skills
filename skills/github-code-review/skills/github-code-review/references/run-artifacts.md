@@ -13,12 +13,12 @@ Normal mode retains these files only during execution. Eval mode writes to:
   <UTC timestamp>_<ide>_<full UUID>/
     README.md                         # human index, relative links
     run.json                          # schema_version: 1
-    input/                            # the seven frozen inputs prepare fetched
+    input/                            # the seven frozen inputs stage2 materialized
     output/review-draft.md             # actual review-phase output, even if rejected
     output/review.md                   # exact intended comment, only if gates pass
     output/validation.json            # original structure validator response
     output/security-gates.json        # both security gate outcomes/evidence
-    execution/pr-snapshot.json        # SHAs, artifact paths and PR summary from prepare
+    execution/materialize-response.json # saved by stage2 (gh), also on failure
     execution/review-brief.md          # paths-only brief rendered by review_run.py
     execution/stages.jsonl             # written by review_run.py
     execution/codegraph.log           # if attempted
@@ -33,14 +33,14 @@ Normal mode retains these files only during execution. Eval mode writes to:
 Its own steps use its clock; agent stages end at the write time of
 the file they leave (`security-gates.json`,
 `review-draft.md`) and start where the previous stage
-ended. `prepare` saves the snapshot even when fetching fails. Never continue
-review with incomplete inputs.
+ended. `stage2` saves its response even on failure. Never continue review
+with incomplete materialized inputs.
 
-Stage 2 writes the rule gate to `output/security-gates.json` (format in
-SKILL.md); `publish` adds the output gate. Structure status comes from the
+Stage 3 writes the rule gate to `output/security-gates.json` (format in
+SKILL.md); `finalize` adds the output gate. Structure status comes from the
 validator's unchanged `ok` field. `finish --status completed`
 requires all gates passed, a draft, the complete snapshot/seven frozen inputs
-and, in normal mode, a posted comment (`publish` records the status);
+and, in normal mode, a posted comment (`post` records the status);
 it never labels a rejected draft as `review.md`. A post failure can still
 retain a validated `review.md`.
 
@@ -60,8 +60,8 @@ If the host provides measurements, put only known values in
 Do not guess model parameters, token usage/cost, hidden reasoning or a host
 trace. Never store credentials, environment dumps or secret-bearing logs.
 
-Failure/cancellation: call `finish` with the real status, publish status,
-failed stage and error. Eval keeps every observable file already produced.
+Failure/cancellation: call `finish` with the real status, failed stage and
+error; the publish status is already recorded. Eval keeps every observable file already produced.
 Archive failure retains the unarchived worktree and reports its path. Normal
 cleans its own run even when review failed. Cleanup outcome is separate from
 review outcome; show leftovers, never remove another invocation's directory.

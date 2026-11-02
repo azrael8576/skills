@@ -88,7 +88,7 @@ def validate_review_structure(
             }
         )
 
-    signature_needle = f"*{model_id} · {timestamp} UTC*"
+    signature_needle = f"{model_id} · {timestamp} UTC+8"
     signature_indexes = [
         i for i, line in enumerate(lines) if signature_needle in line
     ]
@@ -99,7 +99,7 @@ def validate_review_structure(
                 "code": "signature_mismatch",
                 "message": (
                     "Signature must contain exact model id and timestamp: "
-                    f"{signature_needle}"
+                    f"*{signature_needle}*"
                 ),
             }
         )
@@ -158,7 +158,7 @@ def main() -> int:
         help=(
             "Require a line exactly equal to "
             f"{CODEGRAPH_FOOTER!r} immediately after the signature "
-            "(when Codegraph is available)."
+            "(treatment skill)."
         ),
     )
     args = parser.parse_args()

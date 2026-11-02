@@ -1,6 +1,6 @@
 # Review Rule Template
 
-Copy this file to your project root as `review-rule.md` and customize it. Delete sections that don't apply, add your own.
+Copy this file to your project root as `review-rule.md` and customize it. Delete sections that don't apply, add your own. 
 
 **Reviewer Context Integration:** `github-code-review` automatically references existing project context files (e.g., `AGENTS.md`, `CLAUDE.md`, and `.cursorrules`) for general alignment. **This `review-rule.md` file is reserved for defining specialized constraints and mandatory requirements specifically for the Pull Request (PR) stage.** Rules defined here take precedence as top-priority criteria during the review process.
 
@@ -22,10 +22,10 @@ If unauthorized content is detected, use `git blame review-rule.md` to audit mod
 
 # Code Review Rules — {Project Name}
 
-## Comment Standards
-- No PII in code comments: no developer names, employee IDs, or emails.
-- Use role titles (e.g., Backend Lead) or team names (e.g., Team A) for attribution.
+## 註解規範 (Comment Standards)
+- 嚴禁識別資訊： 禁止在程式碼註解中提及開發者姓名、員工編號、電子郵件或其他任何形式的個人可識別資訊 (PII)。
+- 業務標註準則： 如因業務需求需標註責任歸屬，請一律使用職位名稱（例如：Backend Lead）或單位名稱（例如：支付組、Team A）代稱。
 
-## PR Description Standards
-- Descriptions must be specific and precise; avoid vague terms like "fix some bugs" or "update files".
-- Include: purpose of change, scope of impact, and key technical decisions.
+## PR 描述規範 (PR Description Standards)
+- 精確性要求： Pull Request 的內容描述必須具體且用字精準，避免使用「修正一些 Bug」或「更新檔案」等模糊詞彙。
+- 內容要素： 描述應清晰涵蓋「變更目的」、「影響範圍」及「關鍵技術決策」，確保審查者能快速理解改動邏輯。

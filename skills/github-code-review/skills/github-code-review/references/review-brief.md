@@ -1,9 +1,9 @@
 # Review Brief
 
-Template for `execution/review-brief.md`. `scripts/review_run.py prepare`
+Template for `execution/review-brief.md`. `scripts/review_run.py stage2`
 replaces every `{braced}` value with the run's bindings and artifact paths
 (**paths-only**: never artifact content). The agent reads the rendered brief at
-Stage 3, never this template.
+Stage 4, never this template.
 
 ## Brief
 

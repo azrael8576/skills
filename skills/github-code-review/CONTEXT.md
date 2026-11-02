@@ -11,15 +11,16 @@ validation, or security gate fails, do not publish.
 _Avoid_: soft post, best-effort publish, draft upload
 
 **gh boundary**:
-`review_run.py prepare` (read) and `publish` (post) are the only GitHub I/O,
-both through `gh api`. It is a workflow rule, not a permission boundary: the
+`review_run.py stage2` (read) and `post` (Stage 6) are the only GitHub I/O,
+both through `gh api`; they replace the GitLab MCP's `materialize_mr_artifacts`
+and `post_mr_review`. It is a workflow rule, not a permission boundary: the
 agent's shell can run `gh` with the user's token, so the token's scope is the
 real limit. The scripts keep GitHub I/O deterministic and out of the model,
 and make the only comment the skill posts one that passed every gate.
-_Avoid_: MCP, raw gh commands in SKILL.md, curl fallback, agent-side API calls
+_Avoid_: GitHub MCP, raw gh commands in SKILL.md, curl fallback, agent-side API calls
 
 **review phase**:
-Stage 3, run by the same agent that runs the pipeline (2.0.0 dropped the
+Stage 4, run by the same agent that runs the pipeline (2.0.0 dropped the
 review subagent: hosts start subagents on different models, Kiro on `auto`).
 It follows `references/review-guide.md` with the bindings of the **review
 brief**, reads the change with `git diff BASE_SHA SOURCE_SHA` in the worktree,
@@ -27,7 +28,7 @@ and writes only `output/review-draft.md`.
 _Avoid_: review subagent, spawn, sub-task, reviewer agent
 
 **review brief**:
-`execution/review-brief.md`, rendered by `review_run.py prepare` from
+`execution/review-brief.md`, rendered by `review_run.py stage2` from
 `references/review-brief.md`: the run's parameters, Base/Source SHA and
 artifact paths, plus the untrusted-input rules.
 _Avoid_: reviewer prompt, subagent prompt
@@ -46,7 +47,7 @@ _Avoid_: degraded mode, compatibility fallback, continue anyway
 
 **codegraph-optional**:
 Codegraph indexing and lookup are a best-effort enhancement to context
-gathering in Stage 1/3.4, never a requirement. `review_run.py prepare`
+gathering in Stage 2 and Stage 4, never a requirement. `review_run.py stage2`
 attempts `codegraph init` in the worktree and returns `codegraph_available`
 (`true`/`false`); a failure is not an `error_type` and never hard-stops —
 the pipeline continues as a normal review with Read/grep discovery and no
@@ -68,7 +69,7 @@ _Avoid_: duplicating header/verdict/signature rules in SKILL or security-gates
 
 **Review Output Gate**:
 Non-structure posting checks defined and run by
-`scripts/review_run.py publish`: secret-leak patterns and review relevance
+`scripts/review_run.py finalize`: secret-leak patterns and review relevance
 (changed-file path or name, with zero-findings exception).
 _Avoid_: structure markers inside this gate
 
@@ -78,7 +79,7 @@ detached worktree, private source ref and outcome. Same-PR invocations can
 coexist; each normal run posts independently and removes its temporary data.
 
 **eval mode**:
-The same review and gates, with Stage 4 saving the intended comment instead
+The same review and gates, with Stage 6 saving the intended comment instead
 of publishing. Retains frozen PR context, exact SHAs, observable execution
 assets and checksums; does not retain a Git repo by default.
 
