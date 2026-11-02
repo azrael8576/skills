@@ -1,5 +1,6 @@
 ---
 name: gitlab-mr-description
+version: 1.0.0
 description: Write a paste-ready GitLab MR title and description in 繁體中文 from the repository template. Use when asked to write or open an MR (寫 MR、開 MR), including stacked MRs.
 ---
 
