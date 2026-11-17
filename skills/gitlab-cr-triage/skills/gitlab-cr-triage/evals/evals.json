@@ -1,0 +1,32 @@
+{
+  "skill_name": "gitlab-cr-triage",
+  "version": "1.0.0",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "這是我的 MR https://gitlab.com/team/flutter-app/-/merge_requests/578 ，這是 AI CR：🟡 本 MR 新增 33 個埋點觸發點但 test/ 沒有變更，tracking-integration-rule.md 要求記錄 MethodChannel 呼叫並驗證事件只送一次，請補 widget test 斷言展開送 view_detail、OK 送 contact_cs、rebuild 不重送 page view。🟢 game_account_unlink_cooldown_dialog.dart:15 直接 UnmergeTrackingEvent() 實例化 mixin class，lib/ 內沒有其他事件這樣用，建議 showGameAccountUnlinkCooldownDialog 增加 required UnmergeTrackingEvent tracking 參數，呼叫端傳 this。請處理。",
+      "expected_output": "Both findings are verified against code, rule text and repo precedent. The dialog parameter suggestion is classified 雜訊 (UI API gains a non-UI parameter; rule forbids only building payloads or calling the channel directly). The 'rebuild does not resend page view' test is 雜訊 (initState send cannot regress on rebuild). The branch tests are judged on value and no-precedent, not added by default. Paste-ready 繁體中文 replies are drafted; no commit or MR comment is made.",
+      "files": [],
+      "assertions": [
+        "Quotes the exact rule sentence for each cited rule instead of paraphrasing it.",
+        "Reports whether the repo already has a test that asserts emitted tracking events, with a grep result.",
+        "Classifies the `tracking: this` dialog parameter suggestion as 雜訊 because it adds a non-UI parameter to a UI function.",
+        "Classifies the 'rebuild does not resend page view' test as 雜訊.",
+        "Drafts a 1-3 sentence 繁體中文 reply for each 雜訊 finding.",
+        "Does not commit, push, or post to the MR."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "MR https://gitlab.com/team/flutter-app/-/merge_requests/601 的 CR 說：🔴 `order_page.dart:88` 在 `await` 之後直接用 `context.pop()`，沒有檢查 `mounted`；🟢 變數名 `vo` 建議改成 `orderVo`。幫我處理。",
+      "expected_output": "The mounted-check finding is verified in code; if the await-then-context use exists it is 真問題 and fixed with the repo's mounted-check idiom, with the affected tests run. The rename is 雜訊 unless a repo naming rule says otherwise. The report lists the fix, test output and a reply for the rename.",
+      "files": [],
+      "assertions": [
+        "Opens order_page.dart at the cited line before deciding the bucket.",
+        "Fixes the missing mounted check only after confirming it exists on the MR head.",
+        "Runs only the tests related to the changed file.",
+        "Classifies the rename as 雜訊 or cites the repo rule that requires it."
+      ]
+    }
+  ]
+}
